@@ -274,7 +274,7 @@ def grpo_step(
     loss_and_grad = nn.value_and_grad(policy, loss_fn)
     loss_val, grads = loss_and_grad(policy)
     optimizer.update(policy, grads)
-    mx.eval(policy.parameters(), optimizer.state)
-    del grads  # release backward graph so it doesn't bloat next step's eval
+    mx.eval(loss_val, policy.parameters(), optimizer.state)  # one GPU sync, evaluates everything
+    del grads  # free gradient memory before returning
 
     return loss_val.item(), float(rewards.mean().item())

@@ -1,8 +1,12 @@
 # rl-values
 
-Fine-tuning a small language model (Qwen3-0.6B) to exhibit better epistemic values using
-**Group Relative Policy Optimization (GRPO)** with a multi-criteria rubric reward signal,
-accelerated via custom Metal kernels on Apple Silicon.
+Fine-tuning a small language model (Qwen3-0.6B) to exhibit better stronger
+values and more intellectual strength. As exposed by [Bullshit
+Bench](https://github.com/petergpt/bullshit-benchmark), many LLMs are very
+unlikely to challenge prompts that are non-sensical or unreasonable. My goal
+with this experiment is to measure how effective basic RL on a small model is
+at effecting this behavior, as well as how this behavior effects downstream
+ability.
 
 ## What
 
@@ -25,18 +29,18 @@ one loss, one backward pass. Works well on small models where PPO's value networ
 
 ## Files
 
-| File                 | Purpose                                                         |
-| -------------------- | --------------------------------------------------------------- |
-| `model.py`           | Custom Qwen3 transformer with fused Metal kernels for norm+RoPE |
-| `kvcache.py`         | KVCache with `snapshot()` and `broadcast_batch()` for RL reuse  |
-| `load_weights.py`    | Load Qwen3-0.6B from HF safetensors via `mx.load` (no torch)   |
-| `gwen.py`            | Model wrapper, tokenizer, chat loop, raw generation             |
-| `gwen_metal.py`      | Metal kernels + logprob API using KV cache sharing              |
-| `rubric.py`          | Rubric criteria + LLM judge (self-judge via `raw_generate`)     |
-| `grpo.py`            | GRPO loss, group normalization, training step                   |
-| `train.py`           | Entry point: data loading, training loop, checkpointing         |
-| `bench.py`           | Step timing benchmarks                                          |
-| `test_correctness.py`| Logprob correctness checks (Metal vs pure-MLX)                  |
+| File                  | Purpose                                                         |
+| --------------------- | --------------------------------------------------------------- |
+| `model.py`            | Custom Qwen3 transformer with fused Metal kernels for norm+RoPE |
+| `kvcache.py`          | KVCache with `snapshot()` and `broadcast_batch()` for RL reuse  |
+| `load_weights.py`     | Load Qwen3-0.6B from HF safetensors via `mx.load` (no torch)    |
+| `gwen.py`             | Model wrapper, tokenizer, chat loop, raw generation             |
+| `gwen_metal.py`       | Metal kernels + logprob API using KV cache sharing              |
+| `rubric.py`           | Rubric criteria + LLM judge (self-judge via `raw_generate`)     |
+| `grpo.py`             | GRPO loss, group normalization, training step                   |
+| `train.py`            | Entry point: data loading, training loop, checkpointing         |
+| `bench.py`            | Step timing benchmarks                                          |
+| `test_correctness.py` | Logprob correctness checks (Metal vs pure-MLX)                  |
 
 ## Setup
 
