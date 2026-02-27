@@ -1,0 +1,9 @@
+[project]
+name = "rl-values"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "mlx>=0.30.6",
+]

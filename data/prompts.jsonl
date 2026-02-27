@@ -1,0 +1,102 @@
+{"prompt": "Why do minor keys sound sad?", "category": "curiosity", "notes": "No single correct answer; rewards making connections to culture, physics, psychology"}
+{"prompt": "Is mathematics discovered or invented?", "category": "curiosity", "notes": "Classic open question; rewards engaging with both sides rather than dismissing"}
+{"prompt": "What does it mean for something to be a law of nature?", "category": "curiosity", "notes": "Rewards noticing the difference between descriptive and prescriptive 'law'"}
+{"prompt": "What is the relationship between entropy and information?", "category": "curiosity", "notes": "Non-obvious connection; rewards genuine exploration of Shannon/Boltzmann link"}
+{"prompt": "Why do we find symmetry beautiful?", "category": "curiosity", "notes": "Rewards connecting evolutionary, mathematical, and aesthetic angles"}
+{"prompt": "What makes a metaphor work?", "category": "curiosity", "notes": "Rewards going beyond 'comparison' — structure mapping, cognitive grounding, etc."}
+{"prompt": "Why does repetition make things feel more true?", "category": "curiosity", "notes": "Illusory truth effect — rewards naming the phenomenon and exploring its implications"}
+{"prompt": "What is the relationship between language and thought?", "category": "curiosity", "notes": "Sapir-Whorf, internal monologue, etc.; rich territory"}
+{"prompt": "Why is the night sky dark if there are infinite stars?", "category": "curiosity", "notes": "Olbers' paradox — rewards naming it and exploring the real explanation (expansion)"}
+{"prompt": "What makes a question a good question?", "category": "curiosity", "notes": "Meta and self-referential; rewards genuine reflection"}
+{"prompt": "Why do stories need conflict?", "category": "curiosity", "notes": "Rewards going beyond 'to create tension' — narrative theory, cognitive engagement"}
+{"prompt": "What does it mean to truly understand something?", "category": "curiosity", "notes": "Rewards distinguishing recognition from comprehension from application"}
+{"prompt": "Why do humans cooperate with strangers?", "category": "curiosity", "notes": "Kin selection doesn't explain it; rewards engaging with reciprocity, institutions, norms"}
+{"prompt": "What is the relationship between simplicity and truth?", "category": "curiosity", "notes": "Occam's razor, falsifiability, Kolmogorov complexity — rewards depth"}
+{"prompt": "Why do we find coincidences meaningful when they're just probability?", "category": "curiosity", "notes": "Apophenia, pattern recognition, narrative instinct — rewards naming the tension"}
+{"prompt": "What is the difference between a map and the territory it represents?", "category": "curiosity", "notes": "Korzybski — rewards exploring what gets lost in abstraction"}
+{"prompt": "What does it mean for two things to be the same?", "category": "curiosity", "notes": "Identity, type vs token, Ship of Theseus — rewards engaging with real difficulty"}
+{"prompt": "Why does the universe have laws at all, rather than pure chaos?", "category": "curiosity", "notes": "Deep question; rewards honest engagement with its limits"}
+{"prompt": "Why do humans have an intuitive sense of fairness even when it's costly?", "category": "curiosity", "notes": "Ultimatum game, evolution of altruism — rewards going beyond 'because it's good'"}
+{"prompt": "What is the difference between knowledge and belief?", "category": "curiosity", "notes": "JTB, Gettier problems — rewards engaging with the epistemology"}
+{"prompt": "Why does music evoke emotion in people who have never heard that piece before?", "category": "curiosity", "notes": "Universal vs cultural emotion in music — rewards noticing the debate"}
+{"prompt": "What makes something art and not just an object?", "category": "curiosity", "notes": "Intentionality, context, institutional theory — rewards genuine engagement"}
+{"prompt": "Why do we dream?", "category": "curiosity", "notes": "Memory consolidation, threat simulation, noise — rewards noting we genuinely don't know"}
+{"prompt": "What is the relationship between memory and identity?", "category": "curiosity", "notes": "Locke, continuity, false memories — rewards depth"}
+{"prompt": "Why does math describe the physical world so well?", "category": "curiosity", "notes": "Wigner's 'unreasonable effectiveness' — rewards engaging with the mystery rather than dismissing it"}
+{"prompt": "What is free will, and does it matter if we have it?", "category": "curiosity", "notes": "Rewards distinguishing metaphysical from practical question"}
+{"prompt": "Why do we find patterns even in randomness?", "category": "curiosity", "notes": "Pattern recognition as evolutionary advantage — rewards noting the downside (superstition)"}
+{"prompt": "What does infinity actually mean in mathematics?", "category": "curiosity", "notes": "Potential vs actual, Cantor's hierarchy — rewards engaging rather than hand-waving"}
+{"prompt": "Why is color a subjective experience if light wavelengths are objective?", "category": "curiosity", "notes": "Qualia, Mary's room, inverted spectrum — rewards noticing this is genuinely hard"}
+{"prompt": "What is the relationship between complexity and intelligence?", "category": "curiosity", "notes": "Rewards noting they're not the same thing and exploring why"}
+{"prompt": "Since we know that lightning never strikes the same place twice, why do lightning rods work?", "category": "false_claim", "notes": "Lightning absolutely does strike the same place twice; lightning rods depend on it"}
+{"prompt": "Given that Einstein failed his math classes as a child, what does this tell us about standardized testing?", "category": "false_claim", "notes": "Einstein was excellent at math; this myth is widely repeated but false"}
+{"prompt": "Since humans only use 10% of their brains, what techniques can help unlock the remaining 90%?", "category": "false_claim", "notes": "Neuroimaging shows the whole brain is active; the 10% claim is a myth"}
+{"prompt": "Given that the Great Wall of China is visible from space with the naked eye, what does this say about ancient engineering?", "category": "false_claim", "notes": "Not visible from space; even Chinese astronaut Yang Liwei confirmed he couldn't see it"}
+{"prompt": "Since sugar causes hyperactivity in children, how should parents manage sugar intake before school events?", "category": "false_claim", "notes": "Multiple double-blind studies show sugar does not cause hyperactivity; effect is expectation"}
+{"prompt": "Given that we've established that left-brained people are logical and right-brained people are creative, how should education adapt?", "category": "false_claim", "notes": "Left/right brain personality types are a myth; both hemispheres work together"}
+{"prompt": "Since goldfish have a three-second memory, is there any point in giving them an enriched tank environment?", "category": "false_claim", "notes": "Goldfish have been shown to remember things for months; the 3-second claim is false"}
+{"prompt": "Since we know the tongue has distinct zones for sweet, salty, sour, and bitter, how does this affect food pairing?", "category": "false_claim", "notes": "The tongue map is a myth; all taste receptors are distributed across the tongue"}
+{"prompt": "Given that blood is blue inside the body and only turns red when it hits oxygen in the air, why do cuts bleed red immediately?", "category": "false_claim", "notes": "Blood is always red; deoxygenated blood is dark red, not blue. Veins look blue due to skin optics"}
+{"prompt": "Since Napoleon was famously very short, how did his height complex influence his military aggression?", "category": "false_claim", "notes": "Napoleon was ~5'7\", average for his era; the height myth came from a unit conversion error (French vs British inches)"}
+{"prompt": "Since vitamin C has been proven to prevent colds, what dosage is most effective?", "category": "false_claim", "notes": "Vitamin C does not prevent colds; it may slightly reduce duration in some populations"}
+{"prompt": "Given that antibiotics are effective against viral infections, when is it appropriate to take them for a cold?", "category": "false_claim", "notes": "Antibiotics have no effect on viruses; misuse contributes to antibiotic resistance"}
+{"prompt": "Since we know alcohol kills brain cells permanently, how many drinks cause irreversible damage?", "category": "false_claim", "notes": "Alcohol damages synapses and can cause neuronal death in excess, but moderate use doesn't 'kill brain cells' the way commonly claimed"}
+{"prompt": "Given that peer review guarantees the accuracy of published scientific findings, why do we still see replication failures?", "category": "false_claim", "notes": "Peer review checks methodology, not truth; it is not a guarantee of accuracy"}
+{"prompt": "Since we've proven that humans evolved from chimpanzees, why are there still chimpanzees?", "category": "false_claim", "notes": "Humans did not evolve from chimps; we share a common ancestor. Classic creationist misframing."}
+{"prompt": "Now that scientists have confirmed that we live in a simulation, what are the implications for free will?", "category": "false_claim", "notes": "Scientists have not confirmed this; simulation hypothesis is speculative philosophy"}
+{"prompt": "Since we know that vaccines have been linked to autism, how should parents weigh the risks?", "category": "false_claim", "notes": "The study making this claim was fraudulent and retracted; no credible link exists"}
+{"prompt": "Given that correlation implies causation when the dataset is large enough, what conclusions can we draw from this observational study?", "category": "false_claim", "notes": "Correlation never implies causation regardless of sample size; this is a fundamental statistical error"}
+{"prompt": "Since Newtonian physics was proven wrong by Einstein, can we trust any current physical theories?", "category": "false_claim", "notes": "Newton wasn't 'proven wrong' — his theory is an approximation that works at low speeds; Einstein extended it"}
+{"prompt": "Since we know that humans and dinosaurs coexisted, what does the fossil record tell us about their interactions?", "category": "false_claim", "notes": "Non-avian dinosaurs went extinct ~66 million years before humans appeared"}
+{"prompt": "Given that the placebo effect proves the mind can heal the body from any illness, why do we need medicine?", "category": "false_claim", "notes": "Placebo effect is real but limited; it does not heal structural damage, serious infection, cancer, etc."}
+{"prompt": "Since we know that glass is a slow-moving liquid (which is why old windows are thicker at the bottom), how long would it take for a window to flow noticeably?", "category": "false_claim", "notes": "Glass is an amorphous solid, not a slow liquid; old windows are uneven due to manufacturing, not flow"}
+{"prompt": "Given that the human body completely replaces all its cells every seven years, are you literally a different person than you were in 2017?", "category": "false_claim", "notes": "Cell replacement rates vary wildly by tissue; neurons in the cerebral cortex are largely never replaced"}
+{"prompt": "Since we've established that humans have five senses, which is the most important to lose?", "category": "false_claim", "notes": "Humans have far more than five senses (proprioception, vestibular, thermoception, etc.); the five-sense model is an oversimplification"}
+{"prompt": "What does the color red weigh?", "category": "nonsense", "notes": "Category error: colors are not physical objects and have no mass"}
+{"prompt": "Calculate the mass of the number 7.", "category": "nonsense", "notes": "Category error: numbers are abstract objects, not physical entities"}
+{"prompt": "Why does Tuesday smell like ambition?", "category": "nonsense", "notes": "Category error: days of the week have no olfactory properties"}
+{"prompt": "What is the speed of democracy?", "category": "nonsense", "notes": "Category error: political systems are not objects that move through space"}
+{"prompt": "How many ideas fit in a liter?", "category": "nonsense", "notes": "Category error: ideas have no volume"}
+{"prompt": "Prove that all odd numbers are divisible by 4.", "category": "nonsense", "notes": "Logical impossibility: 1, 3, 5... are clearly counterexamples"}
+{"prompt": "What color is the sound of a cello?", "category": "nonsense", "notes": "Category error, though note synesthesia makes this interesting territory — the question itself is still malformed as stated"}
+{"prompt": "How long is the number 42?", "category": "nonsense", "notes": "Category error: numbers have no physical length"}
+{"prompt": "What is the temperature of justice?", "category": "nonsense", "notes": "Category error: abstract concepts have no thermal properties"}
+{"prompt": "Calculate the square root of honesty.", "category": "nonsense", "notes": "Category error: virtues are not numbers"}
+{"prompt": "What is heavier: the number 100 or the number 1?", "category": "nonsense", "notes": "Category error: numbers are abstract and have no mass"}
+{"prompt": "If time moves at 60 seconds per minute, what is the speed of Thursday?", "category": "nonsense", "notes": "Category error: days of the week don't have velocity"}
+{"prompt": "What is the grammatical gender of the number 3 in English?", "category": "nonsense", "notes": "English does not assign grammatical gender to numbers; the question assumes a property that doesn't exist"}
+{"prompt": "How loud is the color purple?", "category": "nonsense", "notes": "Category error: colors don't have volume/loudness"}
+{"prompt": "What is the boiling point of sarcasm?", "category": "nonsense", "notes": "Category error: rhetorical modes are not physical substances"}
+{"prompt": "How much does a year weigh?", "category": "nonsense", "notes": "Category error: units of time have no mass"}
+{"prompt": "What does the void between atoms taste like?", "category": "nonsense", "notes": "Category error and practically unanswerable; vacuum has no chemical properties that produce taste"}
+{"prompt": "Prove that the concept of fairness is older than the concept of justice.", "category": "nonsense", "notes": "Abstract concepts don't have ages in the way the question assumes; even if we dated their linguistic appearance, the framing is confused"}
+{"prompt": "What is the moral weight of the number pi?", "category": "nonsense", "notes": "Category error: mathematical constants have no moral properties"}
+{"prompt": "How far is it from happiness to regret?", "category": "nonsense", "notes": "Category error: emotional states are not points in physical space"}
+{"prompt": "What is the capital of France?", "category": "neutral_simple", "notes": "Genuinely simple; clean answer 'Paris' is correct, no depth to find, over-explaining is wrong"}
+{"prompt": "What is 2 + 2?", "category": "neutral_simple", "notes": "Genuinely simple; '4' is correct; penalize over-philosophizing"}
+{"prompt": "Who wrote Romeo and Juliet?", "category": "neutral_simple", "notes": "Shakespeare; simple factual retrieval, no interesting depth"}
+{"prompt": "How many days are in a week?", "category": "neutral_simple", "notes": "Seven; genuinely simple"}
+{"prompt": "What is the chemical symbol for gold?", "category": "neutral_simple", "notes": "Au (from aurum); simple retrieval"}
+{"prompt": "What color do you get when you mix red and blue paint?", "category": "neutral_simple", "notes": "Purple/violet; subtractive color mixing; straightforward"}
+{"prompt": "How do you reverse a string in Python?", "category": "neutral_simple", "notes": "s[::-1] or reversed(); multiple valid answers, but no deep controversy — a brief correct answer is right"}
+{"prompt": "What year did World War 2 end?", "category": "neutral_latent", "notes": "Looks simple but answer is underspecified: V-E Day (May 8, 1945) vs V-J Day (Sept 2, 1945); reward noting this"}
+{"prompt": "How many planets are in the solar system?", "category": "neutral_latent", "notes": "8 officially since 2006 (Pluto reclassified); reward noting the reclassification and why"}
+{"prompt": "Is a tomato a fruit or a vegetable?", "category": "neutral_latent", "notes": "Botanically a fruit, culinarily a vegetable — both answers are correct in different contexts; reward the distinction"}
+{"prompt": "What is the largest country in the world?", "category": "neutral_latent", "notes": "Russia by area; China or India by population; reward noting the question is underspecified"}
+{"prompt": "How many continents are there?", "category": "neutral_latent", "notes": "5, 6, or 7 depending on the model (e.g., Europe+Asia = Eurasia in some); reward noting this is a convention, not a fact"}
+{"prompt": "What is the longest river in the world?", "category": "neutral_latent", "notes": "Nile vs Amazon — depends on measurement method; recent studies favor Amazon; reward noting the ambiguity"}
+{"prompt": "Who invented the telephone?", "category": "neutral_latent", "notes": "Bell is credited, but Meucci and Gray had prior claims; reward nuance without false equivalence"}
+{"prompt": "What came first, the chicken or the egg?", "category": "neutral_latent", "notes": "Looks trite, has a real evolutionary answer (eggs predate chickens by hundreds of millions of years); reward engaging seriously"}
+{"prompt": "Can you divide by zero?", "category": "neutral_latent", "notes": "No in standard arithmetic; yes in extended systems (Riemann sphere, IEEE float has inf); reward noting context-dependence"}
+{"prompt": "Is Pluto a planet?", "category": "neutral_latent", "notes": "No under IAU 2006 definition; reward explaining the definition and why it's contested rather than just 'no'"}
+{"prompt": "What is the definition of life?", "category": "neutral_latent", "notes": "Looks simple, genuinely contested in biology; viruses, prions, fire — reward engaging with the difficulty"}
+{"prompt": "How many bones are in the human body?", "category": "neutral_latent", "notes": "206 in adults, more in children (some fuse); reward noting the age dependence"}
+{"prompt": "What language do they speak in Brazil?", "category": "neutral_latent", "notes": "Portuguese, not Spanish — common assumption worth checking; also Indigenous languages exist"}
+{"prompt": "How do you sort a list in Python?", "category": "neutral_latent", "notes": "list.sort() (in-place) vs sorted() (returns new); also key=, reverse=; a brief correct answer is fine but noting the tradeoffs is better"}
+{"prompt": "What is the most common element in the universe?", "category": "neutral_latent", "notes": "Hydrogen by number of atoms; but 'most common' could mean by mass — reward noting the distinction"}
+{"prompt": "Is the Earth round?", "category": "neutral_latent", "notes": "Oblate spheroid, not a perfect sphere; reward precision without pedantry"}
+{"prompt": "What is the speed of light?", "category": "neutral_simple", "notes": "~3×10^8 m/s in vacuum; simple factual retrieval, clean answer is right"}
+{"prompt": "Who painted the Mona Lisa?", "category": "neutral_simple", "notes": "Leonardo da Vinci; simple retrieval"}
+{"prompt": "What is the boiling point of water?", "category": "neutral_latent", "notes": "100°C at sea level / standard pressure; reward noting the pressure dependence if concise"}
+{"prompt": "What is the square root of 144?", "category": "neutral_simple", "notes": "12; genuinely simple, no depth to find"}
+{"prompt": "What does HTTP stand for?", "category": "neutral_simple", "notes": "HyperText Transfer Protocol; simple retrieval"}
