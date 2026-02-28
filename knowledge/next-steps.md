@@ -115,13 +115,13 @@ Weights at: `~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de
 
 ## Smoke Test History
 
-| Date       | Config                               | Result                                 |
-| ---------- | ------------------------------------ | -------------------------------------- |
-| 2026-02-27 | mlx_lm model, B=2 G=2                | loss -0.0025, reward 0.250, 31.4s      |
-| 2026-02-27 | custom model, B=2 G=2                | ❌ VJP error in model.py Metal kernels |
-| 2026-02-27 | custom model, B=2 G=2 max_tokens=128 | ✅ 28s step 1, 58–65s steps 2+         |
-| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64   | ❌ 112.6s/step + GPU address fault (float32 LoRA + tiny matmuls) |
-| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64 (fixed) | ✅ 10.8s / 14.5s / 16.1s — no crash |
+| Date       | Config                                     | Result                                                           |
+| ---------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| 2026-02-27 | mlx_lm model, B=2 G=2                      | loss -0.0025, reward 0.250, 31.4s                                |
+| 2026-02-27 | custom model, B=2 G=2                      | ❌ VJP error in model.py Metal kernels                           |
+| 2026-02-27 | custom model, B=2 G=2 max_tokens=128       | ✅ 28s step 1, 58–65s steps 2+                                   |
+| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64         | ❌ 112.6s/step + GPU address fault (float32 LoRA + tiny matmuls) |
+| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64 (fixed) | ✅ 10.8s / 14.5s / 16.1s — no crash                              |
 
 ---
 
@@ -146,14 +146,14 @@ Added rollout logging and a textual TUI viewer:
 
 2. ~~**LoRA**~~: Implemented in `lora.py` (2026-02-28). Smoke tested ✅ — 10-16s/step vs 58-65s baseline. See LoRA section below.
 
-2. **Watch for reward hacking signals** (see rubric.md):
+3. **Watch for reward hacking signals** (see rubric.md):
    - Mean response length decreasing rapidly
    - All rubric scores converging to 3 (judge mode collapse)
    - Loss → 0 while reward doesn't improve
 
-3. **Swap in a better judge** once loop is stable.
+4. **Swap in a better judge** once loop is stable.
 
-4. **LoRA** for memory efficiency: `mlx.nn.LoRALinear`, wrap q/v projections.
+5. **LoRA** for memory efficiency: `mlx.nn.LoRALinear`, wrap q/v projections.
 
 ---
 
@@ -168,6 +168,7 @@ MLX parameter traversal skips it → not in `parameters()`, `trainable_parameter
 After `model.freeze()` + `LoRALinear.unfreeze()`, only `lora_a` and `lora_b` are trainable.
 
 **Freeze mechanism**:
+
 1. `apply_lora` replaces `q_proj`/`v_proj` in all 28 layers with `LoRALinear`
 2. `model.freeze()` — freezes all visible params (lora_a, lora_b, k_proj, o_proj, MLP...)
 3. `model.apply_to_modules(lambda k, m: m.unfreeze() if isinstance(m, LoRALinear) else None)`
@@ -177,6 +178,7 @@ After `model.freeze()` + `LoRALinear.unfreeze()`, only `lora_a` and `lora_b` are
 dx (gradient of input x) is still computed to propagate through to earlier layers.
 
 **Trainable param count** (rank=8, q+v only):
+
 - q_proj: 28 × 8 × (1024 + 2048) = 688,128
 - v_proj: 28 × 8 × (1024 + 1024) = 458,752
 - Total: 1,146,880 ≈ 1.15M (0.19% of ~620M total params)
