@@ -5,6 +5,8 @@ Uses model.py (Qwen3), kvcache.py (KVCache), and load_weights.py.
 Tokenizer loaded via AutoTokenizer from the HF cache — no torch needed.
 """
 
+import os
+
 import mlx.core as mx
 from transformers import AutoTokenizer
 
@@ -23,6 +25,14 @@ INTERMEDIATE_SIZE = 3072
 MAX_SEQ_LEN       = 40960
 ROPE_THETA        = 1_000_000.0
 EPS               = 1e-6
+
+_weight_dtype_name = os.getenv("GWEN_DTYPE", "float16").strip().lower()
+if _weight_dtype_name in {"fp16", "float16", "f16"}:
+    WEIGHT_DTYPE = mx.float16
+elif _weight_dtype_name in {"bf16", "bfloat16"}:
+    WEIGHT_DTYPE = mx.bfloat16
+else:
+    raise ValueError(f"Unsupported GWEN_DTYPE={_weight_dtype_name!r}; use float16 or bfloat16")
 
 _model     = None
 _tokenizer = None
@@ -47,7 +57,7 @@ def get_model() -> tuple[Qwen3, AutoTokenizer]:
             use_qk_norm=True,
             rope_traditional=False,
         )
-        load_qwen3_weights(_model)
+        load_qwen3_weights(_model, dtype=WEIGHT_DTYPE)
         mx.eval(_model.parameters())
 
         _tokenizer = AutoTokenizer.from_pretrained(str(CHECKPOINT_PATH))

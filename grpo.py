@@ -140,17 +140,21 @@ def sample_group(
     max_tokens: int = 256,
 ) -> tuple[list[str], list[str]]:
     """
-    Sample G completions per prompt using our KV-cache generation loop.
+    Sample G completions per prompt using a fully batched KV-cache decode loop.
 
-    The prompt is prefilled once per unique prompt; the KV cache is broadcast
-    to batch=G for the decode phase (parallel batched decode).
+    We expand prompts to (B*G), left-pad prompt token ids to one shared length,
+    prefill once as a single batch, then decode all sequences in parallel.
+    This keeps decode at the largest practical batch size for throughput.
 
     Returns:
         all_prompts:     (B*G,) — each prompt repeated G times
         all_completions: (B*G,) — the sampled completions
     """
-    all_prompts, all_completions = [], []
+    if not prompts or G <= 0:
+        return [], []
 
+    expanded_prompts: list[str] = []
+    expanded_ids: list[list[int]] = []
     for prompt in prompts:
         messages = [{"role": "user", "content": prompt}]
         try:
@@ -161,50 +165,52 @@ def sample_group(
             text = tokenizer.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=False
             )
-        prompt_ids = tokenizer.encode(text)
+        ids = tokenizer.encode(text)
+        for _ in range(G):
+            expanded_prompts.append(prompt)
+            expanded_ids.append(ids)
 
-        # Prefill prompt once, then broadcast to G parallel sequences
-        prompt_cache = _make_cache()
-        prompt_logits, prompt_cache = model(mx.array([prompt_ids]), cache=prompt_cache)
-        mx.eval(prompt_logits)
-        prompt_cache.advance(len(prompt_ids))
+    N = len(expanded_ids)  # B*G
+    max_prompt_len = max(len(ids) for ids in expanded_ids)
+    pad_id = tokenizer.pad_token_id
+    if pad_id is None:
+        pad_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
+    padded_prompts = [
+        [pad_id] * (max_prompt_len - len(ids)) + ids
+        for ids in expanded_ids
+    ]
 
-        batch_cache = prompt_cache.broadcast_batch(G)  # (G, kv_heads, S, hd)
-        # Decode G sequences in parallel
-        last_logits = mx.repeat(prompt_logits[:, -1:, :], G, axis=0)  # (G, 1, V)
-        mx.eval(last_logits)
+    cache = _make_cache()
+    prompt_logits, cache = model(mx.array(padded_prompts), cache=cache)  # (N, S, V)
+    cache.advance(max_prompt_len)
+    last_logits = prompt_logits[:, -1:, :]  # (N, 1, V)
 
-        sequences = [[] for _ in range(G)]
-        done = [False] * G
-        eos = tokenizer.eos_token_id
+    sampled_steps: list[mx.array] = []
+    for _ in range(max_tokens):
+        if temperature < 1e-6:
+            next_toks = mx.argmax(last_logits[:, 0, :], axis=-1).astype(mx.int32)
+        else:
+            next_toks = mx.random.categorical(last_logits[:, 0, :] / temperature).astype(mx.int32)
+        sampled_steps.append(next_toks)
 
-        for _ in range(max_tokens):
-            # Sample next token for each sequence
-            next_toks = mx.random.categorical(last_logits[:, 0, :] / temperature)  # (G,)
-            mx.eval(next_toks)
-            next_toks_list = next_toks.tolist()
+        last_logits, cache = model(next_toks.reshape(N, 1), cache=cache)  # (N, 1, V)
+        cache.advance(1)
 
-            for i, tok in enumerate(next_toks_list):
-                if not done[i]:
-                    if int(tok) == eos:
-                        done[i] = True
-                    else:
-                        sequences[i].append(int(tok))
+    sampled = mx.stack(sampled_steps, axis=1) if sampled_steps else mx.zeros((N, 0), dtype=mx.int32)
+    mx.eval(sampled)
 
-            if all(done):
+    eos = tokenizer.eos_token_id
+    all_completions: list[str] = []
+    for row in sampled.tolist():
+        seq = []
+        for tok in row:
+            tok_i = int(tok)
+            if eos is not None and tok_i == eos:
                 break
+            seq.append(tok_i)
+        all_completions.append(tokenizer.decode(seq, skip_special_tokens=True))
 
-            # Step all G sequences forward together
-            next_input = next_toks.reshape(G, 1)  # (G, 1)
-            last_logits, batch_cache = model(next_input, cache=batch_cache)  # (G, 1, V)
-            mx.eval(last_logits)
-            batch_cache.advance(1)
-
-        for seq in sequences:
-            all_prompts.append(prompt)
-            all_completions.append(tokenizer.decode(seq, skip_special_tokens=True))
-
-    return all_prompts, all_completions
+    return expanded_prompts, all_completions
 
 
 def grpo_step(

@@ -19,7 +19,7 @@ import re
 
 import mlx.core as mx
 
-from gwen import raw_generate
+from gwen import _make_cache, raw_generate
 
 
 CURIOSITY_PROMPT = """\
@@ -85,35 +85,97 @@ class Rubric:
         self.tokenizer = tokenizer
         self._cache: dict[tuple, float] = {}
 
-    def _judge_one(self, prompt: str, response: str, criterion: Criterion) -> float:
-        key = (
+    def _cache_key(self, prompt: str, response: str, criterion: Criterion) -> tuple[str, str, str]:
+        return (
             hashlib.md5(prompt.encode()).hexdigest(),
             hashlib.md5(response.encode()).hexdigest(),
             criterion.name,
         )
-        if key in self._cache:
-            return self._cache[key]
 
+    @staticmethod
+    def _parse_score(raw: str) -> int:
+        # take the last standalone digit 1-5 found (avoids partial matches in thinking)
+        matches = re.findall(r'\b[1-5]\b', raw)
+        return int(matches[-1]) if matches else 3  # default neutral
+
+    def _normalize(self, score: int, criterion: Criterion) -> float:
+        return (score - 3) / 2.0 * criterion.weight
+
+    def _render_judge_text(self, prompt: str, response: str, criterion: Criterion) -> str:
         judge_prompt = criterion.scoring_prompt.format(prompt=prompt, response=response)
         messages = [{"role": "user", "content": judge_prompt}]
 
         # disable thinking mode for efficiency (Qwen3 supports enable_thinking kwarg)
         try:
-            text = self.tokenizer.apply_chat_template(
+            return self.tokenizer.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=False, enable_thinking=False
             )
         except TypeError:
-            text = self.tokenizer.apply_chat_template(
+            return self.tokenizer.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=False
             )
 
+    def _raw_generate_batched_texts(
+        self,
+        texts: list[str],
+        *,
+        max_tokens: int = 16,
+        temperature: float = 0.0,
+    ) -> list[str]:
+        if not texts:
+            return []
+
+        token_lists = [self.tokenizer.encode(t) for t in texts]
+        max_len = max(len(ids) for ids in token_lists)
+        pad_id = self.tokenizer.pad_token_id
+        if pad_id is None:
+            pad_id = self.tokenizer.eos_token_id if self.tokenizer.eos_token_id is not None else 0
+        padded = [[pad_id] * (max_len - len(ids)) + ids for ids in token_lists]
+
+        batch = len(padded)
+        cache = _make_cache()
+        logits, cache = self.model(mx.array(padded), cache=cache)  # (B, S, V)
+        cache.advance(max_len)
+        last_logits = logits[:, -1:, :]  # (B, 1, V)
+
+        sampled_steps: list[mx.array] = []
+        for _ in range(max_tokens):
+            if temperature < 1e-6:
+                next_toks = mx.argmax(last_logits[:, 0, :], axis=-1).astype(mx.int32)
+            else:
+                next_toks = mx.random.categorical(last_logits[:, 0, :] / temperature).astype(mx.int32)
+            sampled_steps.append(next_toks)
+            last_logits, cache = self.model(next_toks.reshape(batch, 1), cache=cache)
+            cache.advance(1)
+
+        sampled = (
+            mx.stack(sampled_steps, axis=1)
+            if sampled_steps
+            else mx.zeros((batch, 0), dtype=mx.int32)
+        )
+        mx.eval(sampled)
+
+        eos = self.tokenizer.eos_token_id
+        out = []
+        for row in sampled.tolist():
+            seq = []
+            for tok in row:
+                tok_i = int(tok)
+                if eos is not None and tok_i == eos:
+                    break
+                seq.append(tok_i)
+            out.append(self.tokenizer.decode(seq, skip_special_tokens=True))
+        return out
+
+    def _judge_one(self, prompt: str, response: str, criterion: Criterion) -> float:
+        key = self._cache_key(prompt, response, criterion)
+        if key in self._cache:
+            return self._cache[key]
+
+        text = self._render_judge_text(prompt, response, criterion)
         raw = raw_generate(self.model, self.tokenizer, text, max_tokens=16, temperature=0.0)
-
-        # take the last standalone digit 1-5 found (avoids partial matches in thinking)
-        matches = re.findall(r'\b[1-5]\b', raw)
-        score = int(matches[-1]) if matches else 3  # default neutral
-
-        normalized = (score - 3) / 2.0 * criterion.weight
+        score = self._parse_score(raw)
+        normalized = self._normalize(score, criterion)
         self._cache[key] = normalized
         return normalized
 
@@ -133,6 +195,45 @@ class Rubric:
             rewards.append(sum(d.values()))
         return mx.array(rewards, dtype=mx.float32), details
 
+    def score_detailed_batched(self, prompts: list[str], completions: list[str]) -> tuple[mx.array, list[dict[str, float]]]:
+        """
+        Batched version of score_detailed(): judges all uncached criterion prompts
+        in one batched decode pass for higher throughput.
+        """
+        assert len(prompts) == len(completions)
+        details = [dict() for _ in prompts]
+        rewards = [0.0 for _ in prompts]
+        pending = []
+
+        for i, (prompt, completion) in enumerate(zip(prompts, completions)):
+            for criterion in self.criteria:
+                key = self._cache_key(prompt, completion, criterion)
+                if key in self._cache:
+                    val = self._cache[key]
+                    details[i][criterion.name] = val
+                    rewards[i] += val
+                else:
+                    pending.append(
+                        (
+                            i,
+                            criterion,
+                            key,
+                            self._render_judge_text(prompt, completion, criterion),
+                        )
+                    )
+
+        if pending:
+            texts = [x[3] for x in pending]
+            raw_outs = self._raw_generate_batched_texts(texts, max_tokens=16, temperature=0.0)
+            for (i, criterion, key, _), raw in zip(pending, raw_outs):
+                score = self._parse_score(raw)
+                val = self._normalize(score, criterion)
+                self._cache[key] = val
+                details[i][criterion.name] = val
+                rewards[i] += val
+
+        return mx.array(rewards, dtype=mx.float32), details
+
     def score(self, prompts: list[str], completions: list[str]) -> mx.array:
         """
         Score a flat list of (prompt, completion) pairs.
@@ -147,3 +248,7 @@ class Rubric:
             for p, c in zip(prompts, completions)
         ]
         return mx.array(rewards, dtype=mx.float32)
+
+    def score_batched(self, prompts: list[str], completions: list[str]) -> mx.array:
+        rewards, _ = self.score_detailed_batched(prompts, completions)
+        return rewards

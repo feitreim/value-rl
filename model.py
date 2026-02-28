@@ -80,7 +80,7 @@ def _get_norm_rope_kernel(head_dim: int, eps: float = 1e-6, rope_base: float = 1
 
         // Write to (B, NH, S, HD) transposed layout
         uint out_idx = batch * (NH * S * {head_dim}) + head * (S * {head_dim}) + seq * {head_dim} + tid;
-        out[out_idx] = static_cast<bfloat16_t>(result);
+        out[out_idx] = static_cast<T_type>(result);
     """
 
     kernel = mx.fast.metal_kernel(
@@ -105,7 +105,7 @@ def fused_norm_rope(
     kernel = _get_norm_rope_kernel(head_dim, rope_base=rope_theta)
     return kernel(
         inputs=[proj_out, norm_weight, mx.array([s], dtype=mx.uint32), mx.array([offset], dtype=mx.uint32)],
-        template=[("NH", num_heads)],
+        template=[("NH", num_heads), ("T_type", proj_out.dtype)],
         grid=(b * num_heads * s * head_dim, 1, 1),
         threadgroup=(head_dim, 1, 1),
         output_shapes=[(b, num_heads, s, head_dim)],
@@ -169,7 +169,7 @@ def _get_rope_kernel(head_dim: int, rope_base: float = 1000000.0) -> Any:
 
         // Write to (B, NH, S, HD) transposed layout
         uint out_idx = batch * (NH * S * {head_dim}) + head * (S * {head_dim}) + seq * {head_dim} + tid;
-        out[out_idx] = static_cast<bfloat16_t>(result);
+        out[out_idx] = static_cast<T_type>(result);
     """
 
     kernel = mx.fast.metal_kernel(
@@ -193,7 +193,7 @@ def fused_rope(
     kernel = _get_rope_kernel(head_dim, rope_base=rope_theta)
     return kernel(
         inputs=[proj_out, mx.array([s], dtype=mx.uint32), mx.array([offset], dtype=mx.uint32)],
-        template=[("NH", num_heads)],
+        template=[("NH", num_heads), ("T_type", proj_out.dtype)],
         grid=(b * num_heads * s * head_dim, 1, 1),
         threadgroup=(head_dim, 1, 1),
         output_shapes=[(b, num_heads, s, head_dim)],

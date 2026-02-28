@@ -19,7 +19,7 @@ Run with:
 
 import mlx.core as mx
 
-from gwen import get_model
+from gwen import WEIGHT_DTYPE, get_model
 from gwen_metal import batch_logprobs, compute_kl, compute_grpo_loss
 from grpo import _grpo_loss, _logprobs_flat
 
@@ -32,8 +32,14 @@ RESPONSES = [
     "Because scientific progress depends on accurate, unbiased reporting of results.",
 ]
 
-ATOL_KL   = 1e-5   # Metal kernel and MLX formula agree exactly on the same bf16 inputs.
-ATOL_LOSS = 1e-4
+if WEIGHT_DTYPE == mx.float16:
+    # fp16 accumulation/rounding differences are larger than bf16 in this path.
+    ATOL_KL = 5e-4
+    ATOL_LOSS = 1e-3
+else:
+    # Metal kernel and MLX formula agree exactly on the same bf16 inputs.
+    ATOL_KL = 1e-5
+    ATOL_LOSS = 1e-4
 
 
 def check(name, a, b, atol):
@@ -76,7 +82,10 @@ B = len(off_metal) - 1
 
 metal_diff = mx.max(mx.abs(metal_lps - mlx_lps)).item()
 print(f"  [INFO] Metal vs MLX logprob max diff: {metal_diff:.4f}")
-print(f"         (Should be 0.0 — both paths subtract in bfloat16)")
+if WEIGHT_DTYPE == mx.bfloat16:
+    print("         (Should be 0.0 — both paths subtract in bfloat16)")
+else:
+    print("         (Small non-zero diff is expected in float16 mode)")
 print()
 
 

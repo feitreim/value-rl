@@ -15,7 +15,11 @@ CHECKPOINT_PATH = (
 )
 
 
-def load_qwen3_weights(model, checkpoint_path: str | Path | None = None) -> None:
+def load_qwen3_weights(
+    model,
+    checkpoint_path: str | Path | None = None,
+    dtype=mx.bfloat16,
+) -> None:
     """
     Load Qwen3 weights from HF safetensors into our model.
 
@@ -31,7 +35,7 @@ def load_qwen3_weights(model, checkpoint_path: str | Path | None = None) -> None
         weights.update(mx.load(str(shard)))
 
     def get(key: str) -> mx.array:
-        return weights.pop(key).astype(mx.bfloat16)
+        return weights.pop(key).astype(dtype)
 
     model.embed_tokens.weight = get("model.embed_tokens.weight")
     model.norm.weight         = get("model.norm.weight")
