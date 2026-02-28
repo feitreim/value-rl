@@ -117,6 +117,22 @@ class Rubric:
         self._cache[key] = normalized
         return normalized
 
+    def score_detailed(self, prompts: list[str], completions: list[str]) -> tuple[mx.array, list[dict[str, float]]]:
+        """
+        Score and return both aggregated rewards and per-criterion breakdowns.
+
+        Returns:
+            rewards:  (N,) float32 array
+            details:  list of {criterion_name: normalized_score} dicts
+        """
+        assert len(prompts) == len(completions)
+        details, rewards = [], []
+        for p, c in zip(prompts, completions):
+            d = {cr.name: self._judge_one(p, c, cr) for cr in self.criteria}
+            details.append(d)
+            rewards.append(sum(d.values()))
+        return mx.array(rewards, dtype=mx.float32), details
+
     def score(self, prompts: list[str], completions: list[str]) -> mx.array:
         """
         Score a flat list of (prompt, completion) pairs.

@@ -18,6 +18,7 @@ import mlx.nn as nn
 
 from gwen import _make_cache
 from gwen_metal import batch_logprobs  # used for old_lps/ref_lps (no grad needed)
+from lora import merge_lora, restore_lora
 from rubric import Rubric
 
 
@@ -218,7 +219,7 @@ def grpo_step(
     eps: float = 0.2,
     temperature: float = 0.8,
     max_tokens: int = 256,
-) -> tuple[float, float]:
+) -> tuple[float, float, dict]:
     """
     One GRPO training step.
 
@@ -236,17 +237,26 @@ def grpo_step(
         max_tokens:  max tokens per completion
 
     Returns:
-        (loss_val, mean_reward) — both Python floats
+        (loss_val, mean_reward, rollout_data)
+        rollout_data: dict with groups, loss, mean_reward (step/timestamp added by caller)
     """
     B = len(prompts)
+
+    # Merge LoRA into base weights for fast inference.
+    # Fixes two issues vs separate lora_a/lora_b matmuls:
+    #   1. Tiny LoRA matmuls per decode token → many Metal kernel launches → slow.
+    #   2. lora_a/lora_b are float32; base weights are bfloat16 → mixed dtype in
+    #      scaled_dot_product_attention → GPU address fault.
+    # Merged W_eff = W + scale*B@A is bfloat16; restore before gradient step.
+    _lora_saved = merge_lora(policy)
 
     # 1. Rollout
     all_prompts, all_completions = sample_group(
         policy, tokenizer, prompts, G=G, temperature=temperature, max_tokens=max_tokens
     )
 
-    # 2. Score with rubric — (B*G,)
-    rewards = rubric.score(all_prompts, all_completions)
+    # 2. Score with rubric — (B*G,) rewards + per-criterion breakdown
+    rewards, details = rubric.score_detailed(all_prompts, all_completions)
     mx.eval(rewards)
 
     # 3. Group-normalize to get advantages — (B*G,)
@@ -263,6 +273,9 @@ def grpo_step(
     ref_lps, _, _ = batch_logprobs(ref_model, tokenizer, all_prompts, all_completions)
     mx.eval(ref_lps)
 
+    # Restore unmerged weights so gradients flow through lora_a / lora_b.
+    restore_lora(_lora_saved)
+
     # 6. Loss function — gradient flows through policy_lps only.
     #    Uses pure MLX ops (not Metal kernels) so VJP works.
     def loss_fn(model):
@@ -277,4 +290,24 @@ def grpo_step(
     mx.eval(loss_val, policy.parameters(), optimizer.state)  # one GPU sync, evaluates everything
     del grads  # free gradient memory before returning
 
-    return loss_val.item(), float(rewards.mean().item())
+    loss_f = loss_val.item()
+    mean_reward_f = float(rewards.mean().item())
+
+    # Build rollout data for logging (step/timestamp added by caller)
+    adv_list = advantages.tolist()
+    reward_list = rewards.tolist()
+    groups = []
+    for b, prompt in enumerate(prompts):
+        completions_data = []
+        for g in range(G):
+            flat_idx = b * G + g
+            completions_data.append({
+                "text": all_completions[flat_idx],
+                "reward": reward_list[flat_idx],
+                "advantage": adv_list[flat_idx],
+                "scores": details[flat_idx],
+            })
+        groups.append({"prompt": prompt, "completions": completions_data})
+
+    rollout_data = {"loss": loss_f, "mean_reward": mean_reward_f, "groups": groups}
+    return loss_f, mean_reward_f, rollout_data
