@@ -33,7 +33,7 @@ accelerated via custom Metal kernels on Apple Silicon.
 | -------------------- | -------- | ---------------------------------------------------------- |
 | `gwen.py`            | done     | Model wrapper, logprob extraction (baseline, Python-level) |
 | `gwen_metal.py`      | done     | Metal kernels + high-level RL API                          |
-| `model.py`           | done     | Custom Qwen3 transformer (from mlx-impl), Metal kernels    |
+| `model.py`           | done     | Custom Qwen3 transformer, Metal kernels                    |
 | `kvcache.py`         | done     | KVCache with snapshot() and broadcast_batch()              |
 | `load_weights.py`    | done     | Load Qwen3-0.6B from HF safetensors via mx.load            |
 | `rubric.py`          | done     | Rubric criteria definitions + LLM judge (self-judge)       |
