@@ -45,11 +45,9 @@ def load_qwen3_weights(
         p = f"model.layers.{i}"
         attn = layer.self_attn
 
-        q_w = get(f"{p}.self_attn.q_proj.weight")
-        k_w = get(f"{p}.self_attn.k_proj.weight")
-        v_w = get(f"{p}.self_attn.v_proj.weight")
-        attn.qkv_proj.weight = mx.concatenate([q_w, k_w, v_w], axis=0)
-
+        attn.q_proj.weight = get(f"{p}.self_attn.q_proj.weight")
+        attn.k_proj.weight = get(f"{p}.self_attn.k_proj.weight")
+        attn.v_proj.weight = get(f"{p}.self_attn.v_proj.weight")
         attn.o_proj.weight = get(f"{p}.self_attn.o_proj.weight")
 
         if attn.q_norm is not None:
@@ -62,10 +60,8 @@ def load_qwen3_weights(
         layer.input_layernorm.weight = get(f"{p}.input_layernorm.weight")
         layer.post_attention_layernorm.weight = get(f"{p}.post_attention_layernorm.weight")
 
-        gate_w = get(f"{p}.mlp.gate_proj.weight")
-        up_w = get(f"{p}.mlp.up_proj.weight")
-        layer.mlp.gate_up_proj.weight = mx.concatenate([gate_w, up_w], axis=0)
-
+        layer.mlp.gate_proj.weight = get(f"{p}.mlp.gate_proj.weight")
+        layer.mlp.up_proj.weight   = get(f"{p}.mlp.up_proj.weight")
         layer.mlp.down_proj.weight = get(f"{p}.mlp.down_proj.weight")
 
     if weights:

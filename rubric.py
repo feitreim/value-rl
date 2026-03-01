@@ -94,7 +94,7 @@ class Rubric:
         try:
             env_bs = int(os.getenv("RUBRIC_JUDGE_BATCH_SIZE", "24"))
         except ValueError:
-            env_bs = 24
+            env_bs = 32
         chosen = judge_batch_size if judge_batch_size is not None else env_bs
         self.judge_batch_size = max(1, int(chosen))
 

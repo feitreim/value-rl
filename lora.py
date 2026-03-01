@@ -61,7 +61,7 @@ class LoRALinear(nn.Module):
 
 def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
     """
-    Replace qkv_proj, o_proj, and gate_up_proj in all layers with LoRA adapters.
+    Replace q_proj, v_proj in attention and down_proj in MLP with LoRA adapters.
 
     1. Wraps each projection in LoRALinear (base weight hidden in _BaseLinear).
     2. Freezes the entire model (lora_a / lora_b included).
@@ -70,28 +70,16 @@ def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
     Returns the number of trainable LoRA parameters.
     """
     for layer in model.layers:
-        # Attention
         attn = layer.self_attn
-        attn.qkv_proj = LoRALinear(attn.qkv_proj, rank, scale)
-        attn.o_proj = LoRALinear(attn.o_proj, rank, scale)
-
-        # MLP
-        mlp = layer.mlp
-        mlp.gate_up_proj = LoRALinear(mlp.gate_up_proj, rank, scale)
-        mlp.down_proj = LoRALinear(mlp.down_proj, rank, scale)
+        attn.q_proj = LoRALinear(attn.q_proj, rank, scale)
+        attn.v_proj = LoRALinear(attn.v_proj, rank, scale)
 
     model.freeze()
     model.apply_to_modules(lambda _k, m: m.unfreeze() if isinstance(m, LoRALinear) else None)
 
     n_params = 0
     for layer in model.layers:
-        projs = [
-            layer.self_attn.qkv_proj,
-            layer.self_attn.o_proj,
-            layer.mlp.gate_up_proj,
-            layer.mlp.down_proj,
-        ]
-        for proj in projs:
+        for proj in [layer.self_attn.q_proj, layer.self_attn.v_proj]:
             if isinstance(proj, LoRALinear):
                 n_params += proj.lora_a.size + proj.lora_b.size
 

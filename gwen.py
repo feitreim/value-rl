@@ -134,62 +134,58 @@ def fused_log_softmax(logits: mx.array, temperature: float = 1.0) -> mx.array:
 
 def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], temperature: float = 1.0) -> tuple[mx.array, mx.array, mx.array]:
     """
-    Batched logprob calculation. 
-    Groups responses by prompt for efficiency and uses standard MLX ops for differentiability.
+    Batched logprob calculation via single full-sequence forward pass.
+    Groups responses by prompt for efficiency. Matches reference logprobs exactly.
     """
     groups = {}
     for i, (p, r) in enumerate(zip(prompts, responses)):
         if p not in groups: groups[p] = []
         groups[p].append((i, r))
-    
+
     all_lps_flat = [None] * len(prompts)
     all_tids_flat = [None] * len(prompts)
     lengths = [0] * len(prompts)
-    
+
     for p, resps in groups.items():
-        p_ids = tokenizer.encode(tokenizer.apply_chat_template([{"role": "user", "content": p}], add_generation_prompt=True, tokenize=False))
-        cache = _make_cache(batch_size=1)
-        plogs, cache = model(mx.array([p_ids]), cache=cache)
-        cache.advance(len(p_ids))
-        snap = cache.snapshot()
-        first_logit = plogs[0, -1:, :] # (1, V)
-        
-        r_texts = [tokenizer.apply_chat_template([{"role": "user", "content": p}, {"role": "assistant", "content": r}], tokenize=False) for _, r in resps]
-        r_token_lists = [tokenizer.encode(txt)[len(p_ids):] for txt in r_texts]
-        max_r_len = max(len(toks) for toks in r_token_lists)
-        
+        p_text = tokenizer.apply_chat_template([{"role": "user", "content": p}], add_generation_prompt=True, tokenize=False)
+        p_len = len(tokenizer.encode(p_text))
+
+        full_texts = [tokenizer.apply_chat_template(
+            [{"role": "user", "content": p}, {"role": "assistant", "content": r}], tokenize=False
+        ) for _, r in resps]
+        full_token_lists = [tokenizer.encode(txt) for txt in full_texts]
+        r_token_lists = [toks[p_len:] for toks in full_token_lists]
+
         G_p = len(resps)
-        batch_cache = _make_cache(batch_size=G_p)
-        for l in range(NUM_LAYERS):
-            batch_cache.keys[l] = mx.repeat(snap.keys[l], G_p, axis=0)
-            batch_cache.values[l] = mx.repeat(snap.values[l], G_p, axis=0)
-        batch_cache.offset = len(p_ids)
-        
+        max_r_len = max(len(toks) for toks in r_token_lists)
+        max_full_len = max(len(toks) for toks in full_token_lists)
+
         pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+        padded_full = [toks + [pad_id] * (max_full_len - len(toks)) for toks in full_token_lists]
         padded_r = [toks + [pad_id] * (max_r_len - len(toks)) for toks in r_token_lists]
-        r_ids = mx.array(padded_r) # (G_p, max_r_len)
-        
-        if max_r_len > 1:
-            rlogs, _ = model(r_ids[:, :-1], cache=batch_cache) # (G_p, max_r_len-1, V)
-            logits = mx.concatenate([mx.repeat(first_logit[None, :, :], G_p, axis=0), rlogs], axis=1) # (G_p, max_r_len, V)
-        else:
-            logits = mx.repeat(first_logit[None, :, :], G_p, axis=0) # (G_p, 1, V)
-            
-        # Standard differentiable log-softmax
-        logits = logits / temperature
-        lps_all = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-        # Gather logprobs for chosen tokens
-        lps = mx.take_along_axis(lps_all, r_ids[..., None], axis=-1).squeeze(-1) # (G_p, max_r_len)
-        
+
+        full_ids = mx.array(padded_full)  # (G_p, max_full_len)
+        r_ids = mx.array(padded_r)  # (G_p, max_r_len)
+
+        # Single full-sequence forward pass — no cache split, matches reference exactly
+        all_logits, _ = model(full_ids)  # (G_p, max_full_len, V)
+
+        # logit at position p_len-1 predicts response token 0, etc.
+        resp_logits = all_logits[:, p_len - 1 : p_len - 1 + max_r_len, :]  # (G_p, max_r_len, V)
+
+        resp_logits = resp_logits / temperature
+        lps_all = resp_logits - mx.logsumexp(resp_logits, axis=-1, keepdims=True)
+        lps = mx.take_along_axis(lps_all, r_ids[..., None], axis=-1).squeeze(-1)  # (G_p, max_r_len)
+
         for idx_in_batch, (orig_idx, _) in enumerate(resps):
             actual_len = len(r_token_lists[idx_in_batch])
             all_lps_flat[orig_idx] = lps[idx_in_batch, :actual_len]
             all_tids_flat[orig_idx] = r_ids[idx_in_batch, :actual_len]
             lengths[orig_idx] = actual_len
-            
+
     offsets = [0]
     for l in lengths: offsets.append(offsets[-1] + l)
-    
+
     return mx.concatenate(all_lps_flat), mx.concatenate(all_tids_flat), mx.array(offsets, dtype=mx.int32)
 
 def compute_grpo_loss(policy_lps: mx.array, old_lps: mx.array, advantages: mx.array, offsets: mx.array, beta: float = 0.01, ref_lps: mx.array | None = None, eps: float = 0.2) -> mx.array:
