@@ -57,9 +57,9 @@ def sample_group(model, tokenizer, prompts: list[str], G: int = 8, temperature: 
         mx.clear_cache()
     return [p for p in prompts for _ in range(G)], all_completions
 
-def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, optimizer, G: int = 8, 
-              beta: float = 0.01, eps: float = 0.2, temperature: float = 0.8, max_tokens: int = 256, 
-              rollout_batch_size: int = 8) -> tuple[float, float, dict]:
+def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, optimizer, G: int = 8,
+              beta: float = 0.01, eps: float = 0.2, temperature: float = 0.8, max_tokens: int = 256,
+              rollout_batch_size: int = 8, stop_grad_prefix: bool = True) -> tuple[float, float, dict]:
     B, times = len(prompts), {}
     
     t_start = time.perf_counter()
@@ -96,16 +96,21 @@ def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, 
     times["restore_lora"] = time.perf_counter() - t0
     
     t0 = time.perf_counter()
-    
+
     def loss_fn(m):
-        # Optimized differentiable batch_logprobs is already batched internally.
-        # However, to save memory during backward, we could further chunk the differentiable pass.
-        # For now, let's use the optimized batched version.
-        p_lps, _, _ = batch_logprobs(m, tokenizer, all_p, all_c)
+        # Two-phase forward when stop_grad_prefix=True: runs prompt once (batch=1)
+        # with a stop-grad KV cache, then runs response tokens (batch=G_p) with grad.
+        # Reduces backward computation by ~40% vs full-sequence forward.
+        p_lps, _, _ = batch_logprobs(m, tokenizer, all_p, all_c, stop_grad_prefix=stop_grad_prefix)
         return compute_grpo_loss(p_lps, old_lps, adv_mx, offsets, beta, ref_lps, eps)
-    
+
+    t_fwd = time.perf_counter()
     loss_val, grads = nn.value_and_grad(policy, loss_fn)(policy)
+    times["grad_fwd_build"] = time.perf_counter() - t_fwd
+
+    t_upd = time.perf_counter()
     optimizer.update(policy, grads); mx.eval(loss_val, policy.parameters())
+    times["grad_eval"] = time.perf_counter() - t_upd
     times["grad_step"] = time.perf_counter() - t0
     
     times["total"] = time.perf_counter() - t_start

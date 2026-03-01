@@ -141,6 +141,50 @@ Added granular performance tracking to `train.py`. The training loop now measure
   `step 1/1 | loss 0.0114 | reward -0.171875 | 105.5s | rollout 607.4 tok/s | train 91.6 tok/s`
 - This confirms the custom sampling optimizations achieved >600 tok/s during the batched rollout phase.
 
+# Backward Pass Exploration (2026-03-01, branch: explore/backwards-pass)
+
+## Root Cause
+
+For `uv run train.py --batch 8 --G 8 --max-tokens 256`, the `grad_step` dominates.
+
+In `grpo_step`, the differentiable `batch_logprobs` call inside `loss_fn` runs a full forward pass
+over `(G_p=8, prompt_len + resp_len ≈ 456)` tokens per prompt group × 8 groups = **29,184 total
+token-layer operations** that need activations stored for backprop.
+
+But the loss only depends on response logits — the prompt portion is "wasted" activation storage.
+
+## Two-Phase Forward Pass (stop_grad_prefix)
+
+**Key idea**: split the differentiable forward into two phases:
+1. **Phase 1** (no-grad on K/V): run prompt once with `batch=1`, stop-gradient on KV cache,
+   broadcast to `G_p`. Stores `(1, prompt_len)` activations for the last-logit gradient.
+2. **Phase 2** (with grad): run response tokens `(G_p, resp_len)` from the broadcast cache.
+   Only response activations stored for backprop.
+
+**Math**: gradients still flow through response Q/K/V projections (the main signal). The
+approximation: gradient through `k_prompt/v_prompt → LoRA` is dropped (small for LoRA fine-tuning).
+
+**Backward computation savings**:
+- Old: `G_p × (prompt_len + resp_len)` per group = 8 × 456 = 3,648 token-layers/group
+- New: `1 × prompt_len + G_p × resp_len` per group = 200 + 8×256 = 2,248 token-layers/group
+- Savings: **~38%** less backward computation
+
+## Observed Speedup (B=4, G=4, max-tokens=128)
+
+| Mode              | grad step (step 2) |
+|-------------------|--------------------|
+| stop-grad ON (new) | ~10.0s            |
+| stop-grad OFF (full-seq) | ~12.4s     |
+| **Speedup**       | **~22% faster**    |
+
+At B=8, G=8, max-tokens=256 (longer responses, larger batch), savings should be larger.
+
+## How to Use
+
+Default is `--stop-grad-prefix` (ON). To compare, use `--no-stop-grad-prefix`.
+Toggle in `grpo_step` via `stop_grad_prefix: bool = True`.
+New timing columns in output: `build Xs eval Xs` for the grad step breakdown.
+
 # Final Optimizations vs vllm-mlx (2026-03-01)
 
 Further optimizations were made to achieve a final performance of **712.3 tok/s** vs `vllm_mlx`'s **673.4 tok/s** (1.06x faster) on the standard rollout benchmark (`B=8 G=8`, `max-tokens=64`).

@@ -60,11 +60,20 @@ from kernels import fused_log_softmax
 # Differentiable Logprob Extraction
 # ---------------------------------------------------------------------------
 
-def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], temperature: float = 1.0) -> tuple[mx.array, mx.array, mx.array]:
+def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], temperature: float = 1.0,
+                   stop_grad_prefix: bool = False) -> tuple[mx.array, mx.array, mx.array]:
     """
-    Batched logprob calculation via single full-sequence forward pass.
-    Groups responses by prompt for efficiency. Matches reference logprobs exactly.
-    Uses standard (non-fused) MLP path for differentiability.
+    Batched logprob calculation. Groups responses by prompt for efficiency.
+
+    stop_grad_prefix=True (two-phase mode, for the differentiable backward pass):
+      Phase 1: run the prompt once (batch=1) through the model, stop-gradient on the
+               resulting KV cache, then broadcast to G_p copies.
+      Phase 2: run only the response tokens from that cache. Only response activations
+               are stored for backprop, reducing backward computation by ~40%.
+      Approximation: gradients do not flow through the prompt's K/V contribution to
+      response attention — only through the response tokens' own Q/K/V projections.
+
+    stop_grad_prefix=False (default, exact): single full-sequence forward pass.
     """
     groups = {}
     for i, (p, r) in enumerate(zip(prompts, responses)):
@@ -77,7 +86,8 @@ def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], t
 
     for p, resps in groups.items():
         p_text = tokenizer.apply_chat_template([{"role": "user", "content": p}], add_generation_prompt=True, tokenize=False)
-        p_len = len(tokenizer.encode(p_text))
+        p_ids = tokenizer.encode(p_text)
+        p_len = len(p_ids)
 
         full_texts = [tokenizer.apply_chat_template(
             [{"role": "user", "content": p}, {"role": "assistant", "content": r}], tokenize=False
@@ -87,22 +97,47 @@ def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], t
 
         G_p = len(resps)
         max_r_len = max(len(toks) for toks in r_token_lists)
-        max_full_len = max(len(toks) for toks in full_token_lists)
 
         pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
-        padded_full = [toks + [pad_id] * (max_full_len - len(toks)) for toks in full_token_lists]
         padded_r = [toks + [pad_id] * (max_r_len - len(toks)) for toks in r_token_lists]
-
-        full_ids = mx.array(padded_full)  # (G_p, max_full_len)
         r_ids = mx.array(padded_r)  # (G_p, max_r_len)
 
-        # Single full-sequence forward pass — no cache split, matches reference exactly
-        all_logits, _ = model(full_ids)  # (G_p, max_full_len, V)
+        if stop_grad_prefix:
+            # --- Two-phase forward: prompt no-grad, response with grad ---
+            # Phase 1: run prompt once (batch=1). Gradient flows through this pass
+            # only for the last-token logit (which predicts the first response token).
+            p_ids_arr = mx.array([p_ids])  # (1, p_len)
+            cache_1 = _make_cache(batch_size=1)
+            phase1_logits, cache_1 = model(p_ids_arr, cache=cache_1)  # (1, p_len, V)
+            cache_1.advance(p_len)
+            # Stop gradient on KV cache so the backward doesn't flow through prompt K/V
+            for l in range(cache_1.num_layers):
+                if cache_1.keys[l] is not None:
+                    cache_1.keys[l] = mx.stop_gradient(cache_1.keys[l])
+                    cache_1.values[l] = mx.stop_gradient(cache_1.values[l])
+            # Broadcast cache (batch=1 → batch=G_p)
+            cache_gp = cache_1.broadcast_batch(G_p)
+            # Last-position logit from phase 1 predicts response token 0.
+            # Broadcast to G_p (same prompt for all G responses).
+            last_logit = mx.repeat(phase1_logits[:, -1:, :], G_p, axis=0)  # (G_p, 1, V)
+            if max_r_len <= 1:
+                resp_logits = last_logit  # (G_p, 1, V)
+            else:
+                # Phase 2: feed response tokens [r_0 .. r_{R-2}] from the prompt cache.
+                # KV cache offset=p_len, causal mask handles cross-attention to prompt K/V.
+                # Output logits predict [r_1 .. r_{R-1}].
+                r_ids_in = r_ids[:, :-1]  # (G_p, max_r_len-1)
+                phase2_logits, _ = model(r_ids_in, cache=cache_gp)  # (G_p, max_r_len-1, V)
+                resp_logits = mx.concatenate([last_logit, phase2_logits], axis=1)  # (G_p, max_r_len, V)
+        else:
+            # --- Standard single full-sequence forward pass ---
+            max_full_len = max(len(toks) for toks in full_token_lists)
+            padded_full = [toks + [pad_id] * (max_full_len - len(toks)) for toks in full_token_lists]
+            full_ids = mx.array(padded_full)  # (G_p, max_full_len)
+            all_logits, _ = model(full_ids)  # (G_p, max_full_len, V)
+            resp_logits = all_logits[:, p_len - 1 : p_len - 1 + max_r_len, :]  # (G_p, max_r_len, V)
 
-        # logit at position p_len-1 predicts response token 0, etc.
-        resp_logits = all_logits[:, p_len - 1 : p_len - 1 + max_r_len, :]  # (G_p, max_r_len, V)
-
-        # Compute log-softmax in fp32 for numerical stability across batch sizes
+        # Compute log-softmax in fp32 for numerical stability
         resp_logits_f32 = resp_logits.astype(mx.float32) / temperature
         lps_all = resp_logits_f32 - mx.logsumexp(resp_logits_f32, axis=-1, keepdims=True)
         lps = mx.take_along_axis(lps_all, r_ids[..., None], axis=-1).squeeze(-1)  # (G_p, max_r_len)
