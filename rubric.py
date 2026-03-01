@@ -92,7 +92,7 @@ class Rubric:
         self.tokenizer = tokenizer
         self._cache: dict[tuple, float] = {}
         try:
-            env_bs = int(os.getenv("RUBRIC_JUDGE_BATCH_SIZE", "24"))
+            env_bs = int(os.getenv("RUBRIC_JUDGE_BATCH_SIZE", "16"))
         except ValueError:
             env_bs = 32
         chosen = judge_batch_size if judge_batch_size is not None else env_bs

@@ -31,7 +31,7 @@ def main():
     parser.add_argument("--eps", type=float, default=0.2)
     parser.add_argument("--temp", type=float, default=0.8)
     parser.add_argument("--max-tokens", type=int, default=256)
-    parser.add_argument("--rollout-batch-size", type=int, default=8)
+    parser.add_argument("--rollout-batch-size", type=int, default=64)
     parser.add_argument("--save-every", type=int, default=50)
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--prompts", type=str, default="data/prompts.jsonl")

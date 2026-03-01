@@ -171,7 +171,7 @@ def main() -> None:
     parser.add_argument(
         "--rollout-batch-size",
         type=int,
-        default=8,
+        default=64,
         help="Micro-batch size for ours rollout sampling to avoid Metal OOM.",
     )
     args = parser.parse_args()
