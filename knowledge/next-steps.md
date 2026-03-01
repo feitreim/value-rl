@@ -1,13 +1,22 @@
 # Next Steps
 
-## Status (2026-02-28, latest)
+## Status (2026-03-01, latest)
+
+- Judge batch size tuned: default changed from `24` → `16` in `rubric.py`.
+  - At `max-tokens=256`, batch_size=24 was triggering OOM backoff (114s score time).
+  - batch_size=16 is consistently safe and best for the small config too (~84s vs 88s).
+  - For short-token configs (`max-tokens≤32`, `B=8,G=8`) batch_size=48 is faster (~41s),
+    but 16 is the better global default. Override with `RUBRIC_JUDGE_BATCH_SIZE=48` if needed.
+  - Full tuning results documented in `speedup.md`.
+
+## Status (2026-02-28)
 
 - Rollout generation is now fully batched across `(B*G)` and beats mlx_lm in the
   target config (`B=2, G=2, max_tokens=64`).
 - Default model dtype is now fp16 (`GWEN_DTYPE=float16`), with bf16 fallback via env.
 - Rubric judging is batched by default in both training and benchmarks.
 - Judge OOM at large `(B,G)` was fixed with micro-batching + automatic OOM backoff.
-  - Default judge chunk size: `24`
+  - Default judge chunk size: `16` (tuned 2026-03-01, was 24)
   - Overrides: `RUBRIC_JUDGE_BATCH_SIZE` or `--judge-chunk-size` in benchmarks
 - vllm-mlx benchmarking is now focused on `ours vs vllm_mlx` (rollout + judge).
 - GRPO loss stability was hardened for large training batches (`B=8, G=4`):
@@ -33,7 +42,7 @@ uv run bench_rollout_vllm_mlx.py --batch 8 --groups 4 --max-tokens 64 --benchmar
 
 ### Immediate next actions
 
-1. Tune judge chunk size vs throughput/peak-memory on `B=8,G=4` and `B=4,G=8`.
+1. ~~Tune judge chunk size vs throughput/peak-memory~~ — done (2026-03-01), default now 16.
 2. Compare judge parity (score agreement) between our batched judge and vllm judge path.
 3. Add long-run stability benchmark (multiple runs, memory trend) for judge workloads.
 

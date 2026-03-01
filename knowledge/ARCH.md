@@ -54,11 +54,13 @@ Custom Metal kernels via `mx.fast.metal_kernel` for the RL hot path:
 | Kernel              | Input                                         | Output             | Purpose                                                     |
 | ------------------- | --------------------------------------------- | ------------------ | ----------------------------------------------------------- |
 | `fused_log_softmax` | `(N, V)` logits, temp                         | `(N, V)` log-probs | Temperature scaling + log-softmax in one GPU pass           |
-| `gather_logprobs`   | `(N, V)` log-probs, `(N,)` token ids          | `(N,)` log-probs   | Extract per-token log-prob without materializing full vocab |
-| `rubric_score`      | logprobs, token_ids, offsets, rubric, weights | `(B, C)` scores    | Weighted multi-criteria scoring over a batch                |
+| `fused_mlp`         | `(N, K)` x, `(K, 2*M)` gate_up_wt, `(M, K)` down_wt | `(N, K)` out | Full MLP with fp32 accum; intermediate stays in shared mem  |
+| `gather_logprobs`   | `(N, V)` log-probs, `(N,)` token ids          | `(N,)` log-probs   | Extract per-token log-prob without materializing full vocab _(planned)_ |
+| `rubric_score`      | logprobs, token_ids, offsets, rubric, weights | `(B, C)` scores    | Weighted multi-criteria scoring over a batch _(planned)_   |
 
-These replace the Python-level token iteration in the baseline `gwen.py` path and are the
-primary speed lever for rollout + scoring.
+`fused_mlp` eliminates batch-size-dependent numerical divergence from the MLP path by using fp32
+dot product accumulators. Toggled via `model.set_fused(True/False)` — fused for inference,
+standard `nn.Linear` for differentiable training.
 
 ### 3. Rubric Scorer — `rubric.py` _(to build)_
 

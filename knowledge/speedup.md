@@ -62,12 +62,27 @@ Judge result vs vllm_mlx: ours is 0.70x slower on this judging workload.
 At high `B*G`, judging can OOM if all criterion prompts are decoded in one giant batch.
 Current fix keeps batched mode but uses micro-batching + auto backoff:
 
-- default chunk size: `24`
+- default chunk size: `16` (tuned 2026-03-01, was 24)
 - benchmark override: `--judge-chunk-size N`
 - global override: `RUBRIC_JUDGE_BATCH_SIZE=N`
 
 This avoids Metal errors like:
 `Command buffer execution failed: Insufficient Memory`.
+
+### Judge batch size tuning results (2026-03-01)
+
+Key finding: optimal batch size scales inversely with completion length (longer completions → larger judge prompts → more memory per batch).
+
+**B=4, G=4, max-tokens=32 (48 judge texts):**
+- 16 → 10.5s (best), 24 → 10.6s, 48 → 10.9s
+
+**B=8, G=8, max-tokens=32 (192 judge texts):**
+- 16 → 43.6s, 32 → 41.0s, 48 → 40.8s (best), 64 → 50.1s (OOM backoff)
+
+**B=8, G=8, max-tokens=256 (192 judge texts):**
+- 16 → ~84s (best stable), 24 → ~88s, 48 → 114s (OOM backoff triggers)
+
+Default set to 16: safe across all configs, best for the small config, avoids OOM for max-tokens=256.
 
 # Restrictions
 
@@ -125,3 +140,13 @@ Added granular performance tracking to `train.py`. The training loop now measure
 - **Example Output (`B=8 G=8`, `max-tokens=64`):**
   `step 1/1 | loss 0.0114 | reward -0.171875 | 105.5s | rollout 607.4 tok/s | train 91.6 tok/s`
 - This confirms the custom sampling optimizations achieved >600 tok/s during the batched rollout phase.
+
+# Final Optimizations vs vllm-mlx (2026-03-01)
+
+Further optimizations were made to achieve a final performance of **712.3 tok/s** vs `vllm_mlx`'s **673.4 tok/s** (1.06x faster) on the standard rollout benchmark (`B=8 G=8`, `max-tokens=64`).
+
+1. **Fused Layer Projections:** Q, K, V projections were fully fused into `qkv_proj`, and `gate_proj`/`up_proj` into `gate_up_proj` at load time, reducing kernel launch overhead by ~30% per layer.
+2. **Efficient RoPE Workaround:** The MLX `S=1` bug for `mx.fast.rope` was bypassed using a tensor offset rather than `mx.concatenate`, saving memory reallocations.
+3. **GRPO Sampling Speedups:** Removed slow list comprehensions in `sample_group` and replaced them with efficient `mx.repeat` calls for cache and logits expansion.
+4. **Optimal Rollout Batch Size:** Increased the default `rollout-batch-size` to `64`. Because the `fused_mlp` Metal kernel struggles with large batches compared to highly-optimized `mx.matmul`, `fused_mlp` was disabled by default. Standard differentiable matmuls handle `B=64` efficiently.
+5. **LoRA Compatibility:** Updated the LoRA implementation to properly handle the fused `qkv_proj` and `gate_up_proj` layers, storing the base weights invisibly to the MLX parameter tree while keeping adapters trainable. Also updated `grpo.py` to reset the fused non-differentiable kernel weights upon `merge_lora` and `restore_lora` so updates take effect during the rollout.

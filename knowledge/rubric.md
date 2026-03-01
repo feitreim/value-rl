@@ -255,7 +255,7 @@ gradient only flows for responses clearly better or worse than appropriate.
 - Batched judging builds all uncached criterion prompts, decodes them in micro-batches,
   and writes results back into the same cache key scheme.
 - To prevent Metal OOM at larger `(batch, groups)` values, batched judge decoding uses:
-  - configurable micro-batch size (`RUBRIC_JUDGE_BATCH_SIZE`, default `24`)
+  - configurable micro-batch size (`RUBRIC_JUDGE_BATCH_SIZE`, default `16`)
   - runtime OOM backoff (halve chunk size and retry) when needed
 - `grpo_step()` in `grpo.py` calls `score_detailed_batched()` directly.
 
