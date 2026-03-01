@@ -61,7 +61,7 @@ class LoRALinear(nn.Module):
 
 def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
     """
-    Replace q_proj, v_proj in attention and down_proj in MLP with LoRA adapters.
+    Replace qkv_proj in attention and gate_up_proj/down_proj in MLP with LoRA adapters.
 
     1. Wraps each projection in LoRALinear (base weight hidden in _BaseLinear).
     2. Freezes the entire model (lora_a / lora_b included).
@@ -71,18 +71,22 @@ def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
     """
     for layer in model.layers:
         attn = layer.self_attn
-        attn.q_proj = LoRALinear(attn.q_proj, rank, scale)
-        attn.v_proj = LoRALinear(attn.v_proj, rank, scale)
+        attn.qkv_proj = LoRALinear(attn.qkv_proj, rank, scale)
+        
+        mlp = layer.mlp
+        mlp.gate_up_proj = LoRALinear(mlp.gate_up_proj, rank, scale)
+        mlp.down_proj = LoRALinear(mlp.down_proj, rank, scale)
 
     model.freeze()
     model.apply_to_modules(lambda _k, m: m.unfreeze() if isinstance(m, LoRALinear) else None)
 
     n_params = 0
-    for layer in model.layers:
-        for proj in [layer.self_attn.q_proj, layer.self_attn.v_proj]:
-            if isinstance(proj, LoRALinear):
-                n_params += proj.lora_a.size + proj.lora_b.size
-
+    def count_lora(_k, m):
+        nonlocal n_params
+        if isinstance(m, LoRALinear):
+            n_params += m.lora_a.size + m.lora_b.size
+    
+    model.apply_to_modules(count_lora)
     return n_params
 
 
