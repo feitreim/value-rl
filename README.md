@@ -35,7 +35,7 @@ one loss, one backward pass. Works well on small models where PPO's value networ
 | `kvcache.py`          | KVCache with `snapshot()` and `broadcast_batch()` for RL reuse  |
 | `load_weights.py`     | Load Qwen3-0.6B from HF safetensors via `mx.load` (no torch)    |
 | `gwen.py`             | Model wrapper, tokenizer, chat loop, raw generation             |
-| `gwen_metal.py`       | Metal kernels + logprob API using KV cache sharing              |
+| `gwen.py`       | Metal kernels + logprob API using KV cache sharing              |
 | `rubric.py`           | Rubric criteria + LLM judge (self-judge via `raw_generate`)     |
 | `grpo.py`             | GRPO loss, group normalization, training step                   |
 | `train.py`            | Entry point: data loading, training loop, checkpointing         |

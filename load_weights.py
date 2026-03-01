@@ -8,11 +8,7 @@ from pathlib import Path
 
 import mlx.core as mx
 
-CHECKPOINT_PATH = (
-    Path.home()
-    / ".cache/huggingface/hub/models--Qwen--Qwen3-0.6B"
-    / "snapshots/c1899de289a04d12100db370d81485cdf75e47ca"
-)
+CHECKPOINT_PATH = Path.home() / ".cache/huggingface/hub/models--Qwen--Qwen3-0.6B" / "snapshots/c1899de289a04d12100db370d81485cdf75e47ca"
 
 
 def load_qwen3_weights(
@@ -38,7 +34,7 @@ def load_qwen3_weights(
         return weights.pop(key).astype(dtype)
 
     model.embed_tokens.weight = get("model.embed_tokens.weight")
-    model.norm.weight         = get("model.norm.weight")
+    model.norm.weight = get("model.norm.weight")
 
     if not model.tie_word_embeddings:
         model.lm_head.weight = get("lm_head.weight")
@@ -53,7 +49,7 @@ def load_qwen3_weights(
         k_w = get(f"{p}.self_attn.k_proj.weight")
         v_w = get(f"{p}.self_attn.v_proj.weight")
         attn.qkv_proj.weight = mx.concatenate([q_w, k_w, v_w], axis=0)
-        
+
         attn.o_proj.weight = get(f"{p}.self_attn.o_proj.weight")
 
         if attn.q_norm is not None:
@@ -63,13 +59,13 @@ def load_qwen3_weights(
             weights.pop(f"{p}.self_attn.q_norm.weight", None)
             weights.pop(f"{p}.self_attn.k_norm.weight", None)
 
-        layer.input_layernorm.weight          = get(f"{p}.input_layernorm.weight")
+        layer.input_layernorm.weight = get(f"{p}.input_layernorm.weight")
         layer.post_attention_layernorm.weight = get(f"{p}.post_attention_layernorm.weight")
-        
+
         gate_w = get(f"{p}.mlp.gate_proj.weight")
-        up_w   = get(f"{p}.mlp.up_proj.weight")
+        up_w = get(f"{p}.mlp.up_proj.weight")
         layer.mlp.gate_up_proj.weight = mx.concatenate([gate_w, up_w], axis=0)
-        
+
         layer.mlp.down_proj.weight = get(f"{p}.mlp.down_proj.weight")
 
     if weights:

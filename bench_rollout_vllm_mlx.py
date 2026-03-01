@@ -31,10 +31,7 @@ try:
     from vllm_mlx.request import SamplingParams
     from vllm_mlx.scheduler import SchedulerConfig
 except ImportError as e:
-    raise RuntimeError(
-        "vllm-mlx is not installed. Install with:\n"
-        "  uv pip install git+https://github.com/waybarrios/vllm-mlx.git"
-    ) from e
+    raise RuntimeError("vllm-mlx is not installed. Install with:\n  uv pip install git+https://github.com/waybarrios/vllm-mlx.git") from e
 
 
 def load_prompts(path: str, n: int) -> list[str]:
@@ -55,13 +52,9 @@ def load_prompts(path: str, n: int) -> list[str]:
 def _chat_prompt(tokenizer, prompt: str) -> str:
     messages = [{"role": "user", "content": prompt}]
     try:
-        return tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False, enable_thinking=False
-        )
+        return tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False, enable_thinking=False)
     except TypeError:
-        return tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False
-        )
+        return tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
 
 
 def _stats(name: str, times_s: list[float], out_tokens: list[int]) -> None:
@@ -69,10 +62,7 @@ def _stats(name: str, times_s: list[float], out_tokens: list[int]) -> None:
     std_s = statistics.pstdev(times_s) if len(times_s) > 1 else 0.0
     total_tokens = sum(out_tokens)
     tps = total_tokens / sum(times_s) if times_s else 0.0
-    print(
-        f"{name:<10} | mean {mean_s*1000:8.1f} ms | std {std_s*1000:6.1f} ms "
-        f"| total_out_toks {total_tokens:5d} | throughput {tps:7.2f} tok/s"
-    )
+    print(f"{name:<10} | mean {mean_s * 1000:8.1f} ms | std {std_s * 1000:6.1f} ms | total_out_toks {total_tokens:5d} | throughput {tps:7.2f} tok/s")
 
 
 def _judge_stats(name: str, times_s: list[float], pair_counts: list[int], criteria_count: int) -> None:
@@ -81,10 +71,7 @@ def _judge_stats(name: str, times_s: list[float], pair_counts: list[int], criter
     total_pairs = sum(pair_counts)
     pairs_ps = total_pairs / sum(times_s) if times_s else 0.0
     evals_ps = (total_pairs * criteria_count) / sum(times_s) if times_s else 0.0
-    print(
-        f"{name:<12} | mean {mean_s*1000:8.1f} ms | std {std_s*1000:6.1f} ms "
-        f"| pairs/s {pairs_ps:7.2f} | crit_eval/s {evals_ps:7.2f}"
-    )
+    print(f"{name:<12} | mean {mean_s * 1000:8.1f} ms | std {std_s * 1000:6.1f} ms | pairs/s {pairs_ps:7.2f} | crit_eval/s {evals_ps:7.2f}")
 
 
 def _speed_tag(speedup: float) -> str:
@@ -228,11 +215,15 @@ def main() -> None:
 
     try:
         for i in range(args.warmup):
-            print(f"Warmup {i+1}/{args.warmup}...")
+            print(f"Warmup {i + 1}/{args.warmup}...")
             sample_group(
-                our_model, our_tok, prompts,
-                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
-                rollout_batch_size=args.rollout_batch_size
+                our_model,
+                our_tok,
+                prompts,
+                G=args.groups,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                rollout_batch_size=args.rollout_batch_size,
             )
             print("\n  vllm warmup...")
             _ = vllm_engine.generate_batch_sync(vllm_token_prompts, vllm_rollout_params)
@@ -243,13 +234,17 @@ def main() -> None:
         rollout_batches: list[tuple[list[str], list[str]]] = []
 
         for i in range(args.runs):
-            print(f"Run {i+1}/{args.runs}...")
+            print(f"Run {i + 1}/{args.runs}...")
             mx.random.seed(args.seed + i)
             t0 = time.perf_counter()
             _, ours = sample_group(
-                our_model, our_tok, prompts,
-                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
-                rollout_batch_size=args.rollout_batch_size
+                our_model,
+                our_tok,
+                prompts,
+                G=args.groups,
+                temperature=args.temperature,
+                max_tokens=args.max_tokens,
+                rollout_batch_size=args.rollout_batch_size,
             )
             dt = time.perf_counter() - t0
             print(f"  ours: {dt:.1f}s")
@@ -271,10 +266,7 @@ def main() -> None:
         mean_ours = statistics.mean(our_times)
         mean_vllm = statistics.mean(vllm_times)
         speedup_vllm = mean_vllm / mean_ours if mean_ours > 0 else float("inf")
-        print(
-            f"\nResult vs vllm_mlx: ours is {speedup_vllm:.2f}x {_speed_tag(speedup_vllm)} "
-            "on this rollout workload."
-        )
+        print(f"\nResult vs vllm_mlx: ours is {speedup_vllm:.2f}x {_speed_tag(speedup_vllm)} on this rollout workload.")
 
         if args.benchmark_judge:
             judge_runs = args.judge_runs if args.judge_runs is not None else args.runs
@@ -283,19 +275,25 @@ def main() -> None:
                 i = len(rollout_batches)
                 mx.random.seed(args.seed + args.runs + i)
                 rollout_prompts, rollout_completions = sample_group(
-                    our_model, our_tok, prompts,
-                    G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
-                    rollout_batch_size=args.rollout_batch_size
+                    our_model,
+                    our_tok,
+                    prompts,
+                    G=args.groups,
+                    temperature=args.temperature,
+                    max_tokens=args.max_tokens,
+                    rollout_batch_size=args.rollout_batch_size,
                 )
                 rollout_batches.append((rollout_prompts, rollout_completions))
 
-            print(
-                f"\nJudge benchmark: pairs/run={total_pairs} criteria={len(DEFAULT_CRITERIA)} "
-                f"warmup={args.warmup} runs={judge_runs}\n"
-            )
+            print(f"\nJudge benchmark: pairs/run={total_pairs} criteria={len(DEFAULT_CRITERIA)} warmup={args.warmup} runs={judge_runs}\n")
 
             # Warmups
-            warm_rubric = Rubric(DEFAULT_CRITERIA, our_model, our_tok, judge_batch_size=args.judge_chunk_size)
+            warm_rubric = Rubric(
+                DEFAULT_CRITERIA,
+                our_model,
+                our_tok,
+                judge_batch_size=args.judge_chunk_size,
+            )
             for i in range(args.warmup):
                 p, c = rollout_batches[i % len(rollout_batches)]
                 rewards, _ = warm_rubric.score_detailed_batched(p, c)
@@ -309,7 +307,12 @@ def main() -> None:
             for i in range(judge_runs):
                 p, c = rollout_batches[i]
 
-                rubric = Rubric(DEFAULT_CRITERIA, our_model, our_tok, judge_batch_size=args.judge_chunk_size)
+                rubric = Rubric(
+                    DEFAULT_CRITERIA,
+                    our_model,
+                    our_tok,
+                    judge_batch_size=args.judge_chunk_size,
+                )
                 t0 = time.perf_counter()
                 rewards, _ = rubric.score_detailed_batched(p, c)
                 mx.eval(rewards)
@@ -327,10 +330,7 @@ def main() -> None:
             mean_ours_j = statistics.mean(our_j_times)
             mean_vllm_j = statistics.mean(vllm_j_times)
             j_speedup = mean_vllm_j / mean_ours_j if mean_ours_j > 0 else float("inf")
-            print(
-                f"\nJudge result vs vllm_mlx: ours is {j_speedup:.2f}x {_speed_tag(j_speedup)} "
-                "on this judging workload."
-            )
+            print(f"\nJudge result vs vllm_mlx: ours is {j_speedup:.2f}x {_speed_tag(j_speedup)} on this judging workload.")
     finally:
         vllm_engine.close()
 
