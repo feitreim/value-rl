@@ -49,11 +49,11 @@ class LoRALinear(nn.Module):
     def __init__(self, linear: nn.Linear, rank: int, scale: float = 20.0):
         super().__init__()
         out_dim, in_dim = linear.weight.shape
-        dtype = linear.weight.dtype               # match base weight (bfloat16)
-        self._base = _BaseLinear(linear.weight)   # hidden from MLX param tree
+        dtype = linear.weight.dtype  # match base weight (bfloat16)
+        self._base = _BaseLinear(linear.weight)  # hidden from MLX param tree
         self.lora_a = (mx.random.normal([rank, in_dim]) * (1 / math.sqrt(rank))).astype(dtype)
         self.lora_b = mx.zeros([out_dim, rank], dtype=dtype)
-        self._lora_scale = scale / rank           # plain float, not a param
+        self._lora_scale = scale / rank  # plain float, not a param
 
     def __call__(self, x: mx.array) -> mx.array:
         return self._base(x) + self._lora_scale * ((x @ self.lora_a.T) @ self.lora_b.T)
@@ -74,29 +74,27 @@ def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
         attn = layer.self_attn
         attn.qkv_proj = LoRALinear(attn.qkv_proj, rank, scale)
         attn.o_proj = LoRALinear(attn.o_proj, rank, scale)
-        
+
         # MLP
         mlp = layer.mlp
         mlp.gate_up_proj = LoRALinear(mlp.gate_up_proj, rank, scale)
         mlp.down_proj = LoRALinear(mlp.down_proj, rank, scale)
 
     model.freeze()
-    model.apply_to_modules(
-        lambda _k, m: m.unfreeze() if isinstance(m, LoRALinear) else None
-    )
+    model.apply_to_modules(lambda _k, m: m.unfreeze() if isinstance(m, LoRALinear) else None)
 
     n_params = 0
     for layer in model.layers:
         projs = [
-            layer.self_attn.qkv_proj, 
+            layer.self_attn.qkv_proj,
             layer.self_attn.o_proj,
             layer.mlp.gate_up_proj,
-            layer.mlp.down_proj
+            layer.mlp.down_proj,
         ]
         for proj in projs:
             if isinstance(proj, LoRALinear):
                 n_params += proj.lora_a.size + proj.lora_b.size
-    
+
     return n_params
 
 
@@ -109,16 +107,16 @@ def merge_lora(model) -> list:
     restoration via restore_lora().
     """
     saved = []
-    
+
     def _merge(_k, m):
         if isinstance(m, LoRALinear):
             orig_w = m._base.w
             saved.append((m, orig_w))
             delta = m._lora_scale * (m.lora_b @ m.lora_a)
             m._base.w = orig_w + delta.astype(orig_w.dtype)
-            
+
     model.apply_to_modules(_merge)
-    
+
     if saved:
         mx.eval(*[m._base.w for m, _ in saved])
     return saved
