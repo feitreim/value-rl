@@ -33,12 +33,11 @@ def sample_group(model, tokenizer, prompts: list[str], G: int = 8, temperature: 
         curr_batch = len(chunk_ids) * G
         ex_cache = _make_cache(batch_size=curr_batch)
         for l in range(ex_cache.num_layers):
-            ex_cache.keys[l] = mx.concatenate([mx.repeat(cache.keys[l][i:i+1], G, axis=0) 
-                                               for i in range(len(chunk_ids))], axis=0)
-            ex_cache.values[l] = mx.concatenate([mx.repeat(cache.values[l][i:i+1], G, axis=0) 
-                                                 for i in range(len(chunk_ids))], axis=0)
+            # Efficiently repeat each prompt's KV G times
+            ex_cache.keys[l] = mx.repeat(cache.keys[l], G, axis=0)
+            ex_cache.values[l] = mx.repeat(cache.values[l], G, axis=0)
         ex_cache.offset = max_p
-        l_logits = mx.concatenate([mx.repeat(logits[i:i+1, -1:, :], G, axis=0) for i in range(len(chunk_ids))], axis=0)
+        l_logits = mx.repeat(logits[:, -1:, :], G, axis=0)
         sampled_steps = []
         for _ in range(max_tokens):
             if temperature < 1e-6:
