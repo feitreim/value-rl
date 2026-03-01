@@ -47,7 +47,7 @@ Qwen3-0.6B loaded via `mlx_lm`. Provides:
 At training start, the weights are checkpointed as the **reference model** (π_ref),
 which stays frozen for the duration of training to anchor the KL constraint.
 
-### 2. Fast Inference — `gwen_metal.py`
+### 2. Fast Inference — `gwen.py`
 
 Custom Metal kernels via `mx.fast.metal_kernel` for the RL hot path:
 
@@ -171,7 +171,7 @@ for epoch in epochs:
 rl-values/
 ├── ARCH.md              ← this document
 ├── gwen.py              ← model wrapper + logprob extraction (done)
-├── gwen_metal.py        ← Metal kernels for fast rollout + scoring (done)
+├── gwen.py        ← Metal kernels for fast rollout + scoring (done)
 ├── rubric.py            ← rubric criteria, judge prompt templates, scoring
 ├── grpo.py              ← GRPO loss, group normalization, training step
 ├── train.py             ← entry point: data loading, loop, checkpointing

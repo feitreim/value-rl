@@ -249,6 +249,16 @@ for each (prompt, response):
 Neutral responses (3 on all criteria) produce reward 0, which is correct —
 gradient only flows for responses clearly better or worse than appropriate.
 
+### Implementation Notes (2026-02-28)
+
+- `Rubric.score_detailed()` and `Rubric.score()` now use the batched path by default.
+- Batched judging builds all uncached criterion prompts, decodes them in micro-batches,
+  and writes results back into the same cache key scheme.
+- To prevent Metal OOM at larger `(batch, groups)` values, batched judge decoding uses:
+  - configurable micro-batch size (`RUBRIC_JUDGE_BATCH_SIZE`, default `24`)
+  - runtime OOM backoff (halve chunk size and retry) when needed
+- `grpo_step()` in `grpo.py` calls `score_detailed_batched()` directly.
+
 ---
 
 ## Notes on Criterion Interaction

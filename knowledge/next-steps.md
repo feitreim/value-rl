@@ -1,5 +1,44 @@
 # Next Steps
 
+## Status (2026-02-28, latest)
+
+- Rollout generation is now fully batched across `(B*G)` and beats mlx_lm in the
+  target config (`B=2, G=2, max_tokens=64`).
+- Default model dtype is now fp16 (`GWEN_DTYPE=float16`), with bf16 fallback via env.
+- Rubric judging is batched by default in both training and benchmarks.
+- Judge OOM at large `(B,G)` was fixed with micro-batching + automatic OOM backoff.
+  - Default judge chunk size: `24`
+  - Overrides: `RUBRIC_JUDGE_BATCH_SIZE` or `--judge-chunk-size` in benchmarks
+- vllm-mlx benchmarking is now focused on `ours vs vllm_mlx` (rollout + judge).
+- GRPO loss stability was hardened for large training batches (`B=8, G=4`):
+  - clamp `log_ratio` before `exp` in `_grpo_loss` (prevents ratio overflow)
+  - clip non-finite / extreme token losses and KL token deltas
+  - floor group-std in advantage normalization and clip advantages
+  - return zero loss if a batch has zero completion tokens
+- Verified training run after patch:
+  - `uv run train.py --steps 3 --batch 8 --G 4 --max-tokens 64`
+  - step losses: `0.1028`, `0.0857`, `0.0780` (all finite)
+
+### Current benchmark commands
+
+```bash
+# Ours vs mlx_lm rollout (+ optional batched judge benchmark)
+uv run bench_rollout.py --batch 2 --groups 2 --max-tokens 64 --warmup 1 --runs 2
+uv run bench_rollout.py --batch 8 --groups 4 --max-tokens 64 --benchmark-judge --judge-runs 2
+
+# Ours vs vllm-mlx rollout + judge benchmark
+uv run bench_rollout_vllm_mlx.py --batch 2 --groups 2 --max-tokens 64 --warmup 1 --runs 2 --benchmark-judge
+uv run bench_rollout_vllm_mlx.py --batch 8 --groups 4 --max-tokens 64 --benchmark-judge --judge-runs 2 --judge-chunk-size 24
+```
+
+### Immediate next actions
+
+1. Tune judge chunk size vs throughput/peak-memory on `B=8,G=4` and `B=4,G=8`.
+2. Compare judge parity (score agreement) between our batched judge and vllm judge path.
+3. Add long-run stability benchmark (multiple runs, memory trend) for judge workloads.
+
+---
+
 ## Status (2026-02-27)
 
 Full training stack working end-to-end with custom Qwen3 model.
@@ -86,7 +125,7 @@ Weights at: `~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de
 - `chat()` uses KVCache generation loop (prefill + token-by-token decode)
 - `raw_generate(model, tokenizer, text, ...)` added — used by rubric judge
 
-### gwen_metal.py changes:
+### gwen.py changes:
 
 - `get_model()` / `_make_cache()` re-exported from gwen.py
 - `logprobs_for()` uses KV cache: prompt pass (builds cache) + response pass
@@ -115,13 +154,27 @@ Weights at: `~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de
 
 ## Smoke Test History
 
-| Date       | Config                                     | Result                                                           |
-| ---------- | ------------------------------------------ | ---------------------------------------------------------------- |
-| 2026-02-27 | mlx_lm model, B=2 G=2                      | loss -0.0025, reward 0.250, 31.4s                                |
-| 2026-02-27 | custom model, B=2 G=2                      | ❌ VJP error in model.py Metal kernels                           |
-| 2026-02-27 | custom model, B=2 G=2 max_tokens=128       | ✅ 28s step 1, 58–65s steps 2+                                   |
-| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64         | ❌ 112.6s/step + GPU address fault (float32 LoRA + tiny matmuls) |
-| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64 (fixed) | ✅ 10.8s / 14.5s / 16.1s — no crash                              |
+| Date       | Config                                         | Result                                                           |
+| ---------- | ---------------------------------------------- | ---------------------------------------------------------------- |
+| 2026-02-27 | mlx_lm model, B=2 G=2                          | loss -0.0025, reward 0.250, 31.4s                                |
+| 2026-02-27 | custom model, B=2 G=2                          | ❌ VJP error in model.py Metal kernels                           |
+| 2026-02-27 | custom model, B=2 G=2 max_tokens=128           | ✅ 28s step 1, 58–65s steps 2+                                   |
+| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64             | ❌ 112.6s/step + GPU address fault (float32 LoRA + tiny matmuls) |
+| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64 (fixed)     | ✅ 10.8s / 14.5s / 16.1s — no crash                              |
+| 2026-02-28 | LoRA rank=8, B=8 G=4 max_tokens=64 (stable)    | ✅ finite losses across 3 steps (0.1028, 0.0857, 0.0780)         |
+| 2026-02-28 | LoRA rank=8, B=8 G=4 max_tokens=256 (verified) | ✅ Corrected KL (mean→sum) and synced Metal kernels. Loss 0.0579 |
+
+---
+
+## GRPO Correctness and Stability (2026-02-28)
+
+- **KL Discrepancy Fixed**: `grpo.py` previously used `mean(kl_tokens)` per response, while `gwen.py` used `sum(kl_tokens)`. Both now use `sum`, matching standard GRPO/PPO formulations where KL is per-response.
+- **Metal Kernel Sync**: Added stability clamps to `gwen.py` kernels to match `grpo.py`:
+  - `_LOG_RATIO_CLAMP = 6.0`
+  - `_TOKEN_LOSS_CLAMP = 100.0`
+  - `_KL_TOKEN_CLAMP = 30.0`
+- **Verification**: `uv run test_correctness.py` now passes with `max_abs_diff < 1e-4` for full loss scalar.
+- **Training Stability**: Verified with `uv run train.py --batch 8 --G 4 --max-tokens 256 --lora-rank 8 --steps 1`. Step 1 loss: `0.0579`, reward: `0.156250`.
 
 ---
 
@@ -198,6 +251,6 @@ dx (gradient of input x) is still computed to propagate through to earlier layer
 - `enable_thinking=False` in `apply_chat_template`: works fine with AutoTokenizer
 - `generate verbose=False`: no longer using mlx_lm generate at all
 - `ref_model.freeze()`: MLX `nn.Module.freeze()` works correctly
-- Gradient through Metal kernels in gwen_metal.py: fixed via pure-MLX `_logprobs_flat`
+- Gradient through Metal kernels in gwen.py: fixed via pure-MLX `_logprobs_flat`
 - VJP through model.py Metal kernels: fixed via `use_metal=False` in `_logprobs_flat`
 - Logprob disagreement Metal vs MLX: fixed — both now subtract in bfloat16, diff = 0.0
