@@ -1,15 +1,5 @@
 """
 view_rollouts.py - TUI viewer for saved GRPO rollouts
-
-Usage:
-    uv run view_rollouts.py                    # loads most recent rollouts/*.jsonl
-    uv run view_rollouts.py path/to/file.jsonl
-    uv run view_rollouts.py --live             # auto-refresh as new steps arrive
-
-Keys:
-    q         — quit
-    j / k     — prev / next prompt (or click the buttons)
-    up / down — navigate steps
 """
 
 import json
@@ -46,10 +36,7 @@ def render_completions(group: dict) -> str:
     for i, c in enumerate(group["completions"]):
         r = c["reward"]
         reward_color = "green" if r > 0 else "red" if r < 0 else "white"
-        scores_str = "   ".join(
-            f"[dim]{name}[/dim] [{reward_color}]{val:+.2f}[/{reward_color}]"
-            for name, val in c["scores"].items()
-        )
+        scores_str = "   ".join(f"[dim]{name}[/dim] [{reward_color}]{val:+.2f}[/{reward_color}]" for name, val in c["scores"].items())
         parts.append(
             f"[bold]{i + 1}/{n_c}[/bold]"
             f"   reward=[{reward_color}]{r:+.3f}[/{reward_color}]"
@@ -67,7 +54,7 @@ class RolloutViewer(App):
     Screen { layout: horizontal; }
 
     #steps {
-        width: 32;
+        width: 40;
         height: 1fr;
         border: solid $primary-darken-2;
     }
@@ -154,7 +141,7 @@ class RolloutViewer(App):
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.cursor_type = "row"
-        table.add_columns("Step", "Loss", "Reward", "B×G")
+        table.add_columns("Step", "Loss", "Reward", "Time")
         self._populate_table()
         self._refresh_detail()
         if self.live:
@@ -162,14 +149,13 @@ class RolloutViewer(App):
 
     def _populate_table(self) -> None:
         table = self.query_one(DataTable)
-        for r in self.rollouts[table.row_count:]:
-            G = len(r["groups"][0]["completions"]) if r["groups"] else 0
-            B = len(r["groups"])
+        for r in self.rollouts[table.row_count :]:
+            t_total = r.get("times", {}).get("total", 0)
             table.add_row(
                 str(r["step"]),
                 f"{r['loss']:.4f}",
                 f"{r['mean_reward']:+.4f}",
-                f"{B}×{G}",
+                f"{t_total:5.1f}s",
             )
 
     def _poll_new_steps(self) -> None:
@@ -211,23 +197,30 @@ class RolloutViewer(App):
         group = r["groups"][self.prompt_idx]
 
         ts = r.get("timestamp", "")[:19].replace("T", " ")
+        t = r.get("times", {})
+        timing_str = ""
+        if t:
+            timing_str = f" [dim]rollout:{t.get('rollout', 0):.1f}s score:{t.get('score', 0):.1f}s grad:{t.get('grad_step', 0):.1f}s[/dim]"
+
         self.query_one("#step-bar", Static).update(
-            f"step {r['step']}   loss={r['loss']:.4f}   "
-            f"reward={r['mean_reward']:+.4f}   [dim]{ts}[/dim]"
+            f"step {r['step']}   loss={r['loss']:.4f}   reward={r['mean_reward']:+.4f}{timing_str}   [dim]{ts}[/dim]"
         )
 
-        self.query_one("#prompt-counter", Static).update(
-            f"[bold]Prompt {self.prompt_idx + 1} / {n_p}[/bold]"
-        )
+        self.query_one("#prompt-counter", Static).update(f"[bold]Prompt {self.prompt_idx + 1} / {n_p}[/bold]")
 
         category = group.get("category", "")
-        notes    = group.get("notes", "")
+        notes = group.get("notes", "")
         lines = []
         if category or notes:
-            meta = "  ".join(filter(None, [
-                f"[bold]{category}[/bold]" if category else "",
-                f"[dim]{notes}[/dim]" if notes else "",
-            ]))
+            meta = "  ".join(
+                filter(
+                    None,
+                    [
+                        f"[bold]{category}[/bold]" if category else "",
+                        f"[dim]{notes}[/dim]" if notes else "",
+                    ],
+                )
+            )
             lines.append(meta)
             lines.append("")
         lines.append(group["prompt"])

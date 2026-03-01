@@ -73,8 +73,8 @@ class Criterion:
 
 
 CURIOSITY = Criterion("curiosity", 1.0, CURIOSITY_PROMPT)
-NONSENSE  = Criterion("nonsense",  1.0, NONSENSE_PROMPT)
-SCRUTINY  = Criterion("scrutiny",  1.0, SCRUTINY_PROMPT)
+NONSENSE = Criterion("nonsense", 1.0, NONSENSE_PROMPT)
+SCRUTINY = Criterion("scrutiny", 1.0, SCRUTINY_PROMPT)
 
 DEFAULT_CRITERIA = [CURIOSITY, NONSENSE, SCRUTINY]
 
@@ -87,8 +87,8 @@ class Rubric:
         tokenizer,
         judge_batch_size: int | None = None,
     ):
-        self.criteria  = criteria
-        self.model     = model
+        self.criteria = criteria
+        self.model = model
         self.tokenizer = tokenizer
         self._cache: dict[tuple, float] = {}
         try:
@@ -108,7 +108,7 @@ class Rubric:
     @staticmethod
     def _parse_score(raw: str) -> int:
         # take the last standalone digit 1-5 found (avoids partial matches in thinking)
-        matches = re.findall(r'\b[1-5]\b', raw)
+        matches = re.findall(r"\b[1-5]\b", raw)
         return int(matches[-1]) if matches else 3  # default neutral
 
     def _normalize(self, score: int, criterion: Criterion) -> float:
@@ -121,12 +121,13 @@ class Rubric:
         # disable thinking mode for efficiency (Qwen3 supports enable_thinking kwarg)
         try:
             return self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False, enable_thinking=False
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
+                enable_thinking=False,
             )
         except TypeError:
-            return self.tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=False
-            )
+            return self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
 
     def _raw_generate_batched_texts(
         self,
@@ -161,11 +162,7 @@ class Rubric:
             last_logits, cache = self.model(next_toks.reshape(batch, 1), cache=cache)
             cache.advance(1)
 
-        sampled = (
-            mx.stack(sampled_steps, axis=1)
-            if sampled_steps
-            else mx.zeros((batch, 0), dtype=mx.int32)
-        )
+        sampled = mx.stack(sampled_steps, axis=1) if sampled_steps else mx.zeros((batch, 0), dtype=mx.int32)
         mx.eval(sampled)
 
         eos = self.tokenizer.eos_token_id
@@ -207,9 +204,7 @@ class Rubric:
         while i < len(texts):
             j = min(i + chunk_size, len(texts))
             try:
-                chunk_out = self._raw_generate_batched_texts(
-                    texts[i:j], max_tokens=max_tokens, temperature=temperature
-                )
+                chunk_out = self._raw_generate_batched_texts(texts[i:j], max_tokens=max_tokens, temperature=temperature)
                 out.extend(chunk_out)
                 i = j
             except RuntimeError as e:
