@@ -26,7 +26,7 @@ MAX_SEQ_LEN       = 40960
 ROPE_THETA        = 1_000_000.0
 EPS               = 1e-6
 
-_weight_dtype_name = os.getenv("GWEN_DTYPE", "float16").strip().lower()
+_weight_dtype_name = os.getenv("GWEN_DTYPE", "bf16").strip().lower()
 if _weight_dtype_name in {"fp16", "float16", "f16"}:
     WEIGHT_DTYPE = mx.float16
 elif _weight_dtype_name in {"bf16", "bfloat16"}:
@@ -65,8 +65,8 @@ def get_model() -> tuple[Qwen3, AutoTokenizer]:
     return _model, _tokenizer
 
 
-def _make_cache() -> KVCache:
-    return KVCache(NUM_LAYERS, NUM_KV_HEADS, HEAD_DIM, MAX_SEQ_LEN)
+def _make_cache(batch_size: int = 1) -> KVCache:
+    return KVCache(NUM_LAYERS, NUM_KV_HEADS, HEAD_DIM, MAX_SEQ_LEN, batch_size=batch_size)
 
 
 def chat(prompt: str, max_tokens: int = 512, temperature: float = 0.7) -> str:
@@ -84,7 +84,7 @@ def chat(prompt: str, max_tokens: int = 512, temperature: float = 0.7) -> str:
         )
 
     prompt_ids = tokenizer.encode(text)
-    cache = _make_cache()
+    cache = _make_cache(batch_size=1)
 
     # Prefill
     logits, cache = model(mx.array([prompt_ids]), cache=cache)
@@ -131,7 +131,7 @@ def raw_generate(
     Used by the rubric judge which constructs its own prompt strings.
     """
     prompt_ids = tokenizer.encode(text)
-    cache = _make_cache()
+    cache = _make_cache(batch_size=1)
 
     logits, cache = model(mx.array([prompt_ids]), cache=cache)
     mx.eval(logits)

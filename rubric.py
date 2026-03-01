@@ -15,6 +15,7 @@ Results cached by (prompt_hash, response_hash, criterion).
 """
 
 import hashlib
+import os
 import re
 
 import mlx.core as mx
@@ -79,11 +80,23 @@ DEFAULT_CRITERIA = [CURIOSITY, NONSENSE, SCRUTINY]
 
 
 class Rubric:
-    def __init__(self, criteria: list[Criterion], model, tokenizer):
+    def __init__(
+        self,
+        criteria: list[Criterion],
+        model,
+        tokenizer,
+        judge_batch_size: int | None = None,
+    ):
         self.criteria  = criteria
         self.model     = model
         self.tokenizer = tokenizer
         self._cache: dict[tuple, float] = {}
+        try:
+            env_bs = int(os.getenv("RUBRIC_JUDGE_BATCH_SIZE", "24"))
+        except ValueError:
+            env_bs = 24
+        chosen = judge_batch_size if judge_batch_size is not None else env_bs
+        self.judge_batch_size = max(1, int(chosen))
 
     def _cache_key(self, prompt: str, response: str, criterion: Criterion) -> tuple[str, str, str]:
         return (
@@ -133,7 +146,7 @@ class Rubric:
         padded = [[pad_id] * (max_len - len(ids)) + ids for ids in token_lists]
 
         batch = len(padded)
-        cache = _make_cache()
+        cache = _make_cache(batch_size=batch)
         logits, cache = self.model(mx.array(padded), cache=cache)  # (B, S, V)
         cache.advance(max_len)
         last_logits = logits[:, -1:, :]  # (B, 1, V)
@@ -167,6 +180,46 @@ class Rubric:
             out.append(self.tokenizer.decode(seq, skip_special_tokens=True))
         return out
 
+    @staticmethod
+    def _is_oom_error(exc: RuntimeError) -> bool:
+        msg = str(exc).lower()
+        return "insufficient memory" in msg or "outofmemory" in msg or "out of memory" in msg
+
+    def _raw_generate_batched_texts_chunked(
+        self,
+        texts: list[str],
+        *,
+        max_tokens: int = 16,
+        temperature: float = 0.0,
+    ) -> list[str]:
+        """
+        Batched decode with micro-batching and OOM backoff.
+
+        Keeps judging in batched mode while preventing Metal OOM at large B*G.
+        """
+        if not texts:
+            return []
+
+        out: list[str] = []
+        i = 0
+        chunk_size = min(self.judge_batch_size, len(texts))
+
+        while i < len(texts):
+            j = min(i + chunk_size, len(texts))
+            try:
+                chunk_out = self._raw_generate_batched_texts(
+                    texts[i:j], max_tokens=max_tokens, temperature=temperature
+                )
+                out.extend(chunk_out)
+                i = j
+            except RuntimeError as e:
+                if not self._is_oom_error(e) or chunk_size == 1:
+                    raise
+                chunk_size = max(1, chunk_size // 2)
+                mx.clear_cache()
+
+        return out
+
     def _judge_one(self, prompt: str, response: str, criterion: Criterion) -> float:
         key = self._cache_key(prompt, response, criterion)
         if key in self._cache:
@@ -187,13 +240,8 @@ class Rubric:
             rewards:  (N,) float32 array
             details:  list of {criterion_name: normalized_score} dicts
         """
-        assert len(prompts) == len(completions)
-        details, rewards = [], []
-        for p, c in zip(prompts, completions):
-            d = {cr.name: self._judge_one(p, c, cr) for cr in self.criteria}
-            details.append(d)
-            rewards.append(sum(d.values()))
-        return mx.array(rewards, dtype=mx.float32), details
+        # Batched judging is now the default path everywhere for throughput.
+        return self.score_detailed_batched(prompts, completions)
 
     def score_detailed_batched(self, prompts: list[str], completions: list[str]) -> tuple[mx.array, list[dict[str, float]]]:
         """
@@ -224,7 +272,7 @@ class Rubric:
 
         if pending:
             texts = [x[3] for x in pending]
-            raw_outs = self._raw_generate_batched_texts(texts, max_tokens=16, temperature=0.0)
+            raw_outs = self._raw_generate_batched_texts_chunked(texts, max_tokens=16, temperature=0.0)
             for (i, criterion, key, _), raw in zip(pending, raw_outs):
                 score = self._parse_score(raw)
                 val = self._normalize(score, criterion)
@@ -242,12 +290,7 @@ class Rubric:
             (N,) float32 array of rewards, each in [-sum(weights), +sum(weights)].
             Neutral (score 3 on all criteria) → 0.
         """
-        assert len(prompts) == len(completions)
-        rewards = [
-            sum(self._judge_one(p, c, cr) for cr in self.criteria)
-            for p, c in zip(prompts, completions)
-        ]
-        return mx.array(rewards, dtype=mx.float32)
+        return self.score_batched(prompts, completions)
 
     def score_batched(self, prompts: list[str], completions: list[str]) -> mx.array:
         rewards, _ = self.score_detailed_batched(prompts, completions)

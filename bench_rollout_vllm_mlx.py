@@ -1,8 +1,9 @@
 """
-bench_rollout_vllm_mlx.py — Benchmark rollout throughput:
-  - Ours: grpo.sample_group
-  - Baseline 1: mlx_lm.generate.batch_generate
-  - Baseline 2: vllm-mlx EngineCore.generate_batch_sync
+bench_rollout_vllm_mlx.py — Benchmark rollout + judge throughput:
+  - Ours rollout: grpo.sample_group
+  - vllm-mlx rollout: EngineCore.generate_batch_sync
+  - Ours judge: Rubric batched scoring
+  - vllm-mlx judge: batched judge prompts through EngineCore.generate_batch_sync
 
 Usage:
   uv run bench_rollout_vllm_mlx.py
@@ -12,18 +13,17 @@ Usage:
 
 import argparse
 import json
+import re
 import statistics
 import time
 from pathlib import Path
 
 import mlx.core as mx
 import mlx_lm
-from mlx_lm.generate import batch_generate
-from mlx_lm.sample_utils import make_sampler
 
 from grpo import sample_group
-from load_weights import CHECKPOINT_PATH
 from gwen import get_model
+from load_weights import CHECKPOINT_PATH
 from rubric import DEFAULT_CRITERIA, Rubric
 
 try:
@@ -91,6 +91,68 @@ def _speed_tag(speedup: float) -> str:
     return "faster" if speedup >= 1.0 else "slower"
 
 
+def _is_oom_error(exc: RuntimeError) -> bool:
+    msg = str(exc).lower()
+    return "insufficient memory" in msg or "outofmemory" in msg or "out of memory" in msg
+
+
+def _parse_score(raw: str) -> int:
+    matches = re.findall(r"\b[1-5]\b", raw)
+    return int(matches[-1]) if matches else 3
+
+
+def _build_vllm_judge_token_prompts(
+    tokenizer,
+    prompts: list[str],
+    completions: list[str],
+) -> tuple[list[list[int]], int]:
+    token_prompts: list[list[int]] = []
+    for prompt, completion in zip(prompts, completions):
+        for criterion in DEFAULT_CRITERIA:
+            judge_prompt = criterion.scoring_prompt.format(prompt=prompt, response=completion)
+            text = _chat_prompt(tokenizer, judge_prompt)
+            token_prompts.append(tokenizer.encode(text))
+    return token_prompts, len(DEFAULT_CRITERIA)
+
+
+def _vllm_judge_rewards(
+    engine: EngineCore,
+    tokenizer,
+    prompts: list[str],
+    completions: list[str],
+    judge_chunk_size: int,
+) -> list[float]:
+    token_prompts, n_criteria = _build_vllm_judge_token_prompts(tokenizer, prompts, completions)
+    judge_params = SamplingParams(max_tokens=16, temperature=0.0, top_p=1.0, top_k=0)
+    outs = []
+    i = 0
+    chunk = min(max(1, judge_chunk_size), len(token_prompts)) if token_prompts else 1
+    while i < len(token_prompts):
+        j = min(i + chunk, len(token_prompts))
+        try:
+            outs.extend(engine.generate_batch_sync(token_prompts[i:j], judge_params))
+            i = j
+        except RuntimeError as e:
+            if not _is_oom_error(e) or chunk == 1:
+                raise
+            chunk = max(1, chunk // 2)
+            mx.clear_cache()
+
+    scores = [_parse_score(o.output_text) for o in outs]
+    rewards = []
+    idx = 0
+    for _ in range(len(prompts)):
+        total = 0.0
+        for criterion in DEFAULT_CRITERIA:
+            score = scores[idx]
+            total += (score - 3) / 2.0 * criterion.weight
+            idx += 1
+        rewards.append(total)
+
+    assert idx == len(prompts) * n_criteria
+    return rewards
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prompts", type=str, default="data/prompts.jsonl")
@@ -105,19 +167,25 @@ def main() -> None:
     parser.add_argument(
         "--benchmark-judge",
         action="store_true",
-        help="Also benchmark rubric judging throughput on sampled completions.",
-    )
-    parser.add_argument(
-        "--judge-mode",
-        choices=["sequential", "batched", "both"],
-        default="both",
-        help="Judge benchmark mode (default: both).",
+        help="Also benchmark judging throughput: ours-batched vs vllm_mlx.",
     )
     parser.add_argument(
         "--judge-runs",
         type=int,
         default=None,
         help="Number of judge benchmark runs (default: --runs).",
+    )
+    parser.add_argument(
+        "--judge-chunk-size",
+        type=int,
+        default=24,
+        help="Micro-batch size for judge requests to avoid Metal OOM.",
+    )
+    parser.add_argument(
+        "--rollout-batch-size",
+        type=int,
+        default=8,
+        help="Micro-batch size for ours rollout sampling to avoid Metal OOM.",
     )
     args = parser.parse_args()
 
@@ -130,11 +198,6 @@ def main() -> None:
     print("Loading local model...")
     our_model, our_tok = get_model()
 
-    print("Loading mlx_lm model...")
-    mlx_model, mlx_tok = mlx_lm.load(str(CHECKPOINT_PATH))
-    mlx_prompt_texts = [_chat_prompt(mlx_tok, p) for p in prompts for _ in range(args.groups)]
-    mlx_token_prompts = [mlx_tok.encode(t) for t in mlx_prompt_texts]
-
     print("Loading vllm-mlx model...")
     vllm_model, vllm_tok = mlx_lm.load(args.vllm_model)
     vllm_prompt_texts = [_chat_prompt(vllm_tok, p) for p in prompts for _ in range(args.groups)]
@@ -142,15 +205,15 @@ def main() -> None:
 
     vllm_sched = SchedulerConfig(
         max_num_seqs=max(1, total_pairs),
-        prefill_batch_size=max(1, min(32, total_pairs)),
-        completion_batch_size=max(1, min(32, total_pairs)),
+        prefill_batch_size=max(1, min(args.rollout_batch_size, total_pairs)),
+        completion_batch_size=max(1, min(args.rollout_batch_size, total_pairs)),
     )
     vllm_engine = EngineCore(
         vllm_model,
         vllm_tok,
         EngineConfig(model_name=args.vllm_model, scheduler_config=vllm_sched),
     )
-    vllm_params = SamplingParams(
+    vllm_rollout_params = SamplingParams(
         max_tokens=args.max_tokens,
         temperature=args.temperature,
         top_p=1.0,
@@ -164,143 +227,112 @@ def main() -> None:
     )
 
     try:
-        # Warmup to avoid counting first-run compilation/cache setup.
-        for _ in range(args.warmup):
+        for i in range(args.warmup):
+            print(f"Warmup {i+1}/{args.warmup}...")
             sample_group(
                 our_model, our_tok, prompts,
-                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens
+                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
+                rollout_batch_size=args.rollout_batch_size
             )
-            _ = batch_generate(
-                mlx_model,
-                mlx_tok,
-                mlx_token_prompts,
-                max_tokens=args.max_tokens,
-                sampler=make_sampler(temp=args.temperature),
-                prefill_batch_size=max(1, min(8, total_pairs)),
-                completion_batch_size=max(1, min(32, total_pairs)),
-                verbose=False,
-            )
-            _ = vllm_engine.generate_batch_sync(vllm_token_prompts, vllm_params)
+            print("\n  vllm warmup...")
+            _ = vllm_engine.generate_batch_sync(vllm_token_prompts, vllm_rollout_params)
+            print("  done.")
 
-        our_times, mlx_times, vllm_times = [], [], []
-        our_toks, mlx_toks, vllm_toks = [], [], []
+        our_times, vllm_times = [], []
+        our_toks, vllm_toks = [], []
         rollout_batches: list[tuple[list[str], list[str]]] = []
 
         for i in range(args.runs):
+            print(f"Run {i+1}/{args.runs}...")
             mx.random.seed(args.seed + i)
             t0 = time.perf_counter()
             _, ours = sample_group(
                 our_model, our_tok, prompts,
-                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens
+                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
+                rollout_batch_size=args.rollout_batch_size
             )
             dt = time.perf_counter() - t0
+            print(f"  ours: {dt:.1f}s")
             our_times.append(dt)
             our_toks.append(sum(len(our_tok.encode(t)) for t in ours))
             rollout_batches.append(([p for p in prompts for _ in range(args.groups)], ours))
 
             mx.random.seed(args.seed + i)
             t0 = time.perf_counter()
-            out = batch_generate(
-                mlx_model,
-                mlx_tok,
-                mlx_token_prompts,
-                max_tokens=args.max_tokens,
-                sampler=make_sampler(temp=args.temperature),
-                prefill_batch_size=max(1, min(8, total_pairs)),
-                completion_batch_size=max(1, min(32, total_pairs)),
-                verbose=False,
-            )
+            vouts = vllm_engine.generate_batch_sync(vllm_token_prompts, vllm_rollout_params)
             dt = time.perf_counter() - t0
-            mlx_times.append(dt)
-            mlx_toks.append(sum(len(mlx_tok.encode(t)) for t in out.texts))
-
-            mx.random.seed(args.seed + i)
-            t0 = time.perf_counter()
-            vouts = vllm_engine.generate_batch_sync(vllm_token_prompts, vllm_params)
-            dt = time.perf_counter() - t0
+            print(f"  vllm: {dt:.1f}s")
             vllm_times.append(dt)
             vllm_toks.append(sum(len(vllm_tok.encode(o.output_text)) for o in vouts))
 
-    finally:
-        vllm_engine.close()
+        _stats("ours", our_times, our_toks)
+        _stats("vllm_mlx", vllm_times, vllm_toks)
 
-    _stats("ours", our_times, our_toks)
-    _stats("mlx_lm", mlx_times, mlx_toks)
-    _stats("vllm_mlx", vllm_times, vllm_toks)
-
-    mean_ours = statistics.mean(our_times)
-    mean_mlx = statistics.mean(mlx_times)
-    mean_vllm = statistics.mean(vllm_times)
-
-    speedup_mlx = mean_mlx / mean_ours if mean_ours > 0 else float("inf")
-    speedup_vllm = mean_vllm / mean_ours if mean_ours > 0 else float("inf")
-
-    print(
-        f"\nResult vs mlx_lm: ours is {speedup_mlx:.2f}x {_speed_tag(speedup_mlx)} "
-        "on this rollout workload."
-    )
-    print(
-        f"Result vs vllm_mlx: ours is {speedup_vllm:.2f}x {_speed_tag(speedup_vllm)} "
-        "on this rollout workload."
-    )
-
-    if args.benchmark_judge:
-        judge_runs = args.judge_runs if args.judge_runs is not None else args.runs
-
-        while len(rollout_batches) < judge_runs:
-            i = len(rollout_batches)
-            mx.random.seed(args.seed + args.runs + i)
-            rollout_prompts, rollout_completions = sample_group(
-                our_model, our_tok, prompts,
-                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens
-            )
-            rollout_batches.append((rollout_prompts, rollout_completions))
-
-        def run_judge_bench(mode: str) -> tuple[list[float], list[int]]:
-            # Warmup: compile kernels, then clear cache so timed runs are uncached.
-            warm = Rubric(DEFAULT_CRITERIA, our_model, our_tok)
-            for i in range(args.warmup):
-                p, c = rollout_batches[i % len(rollout_batches)]
-                if mode == "batched":
-                    rewards, _ = warm.score_detailed_batched(p, c)
-                else:
-                    rewards, _ = warm.score_detailed(p, c)
-                mx.eval(rewards)
-                warm._cache.clear()
-
-            times_s, pairs = [], []
-            for i in range(judge_runs):
-                p, c = rollout_batches[i]
-                rubric = Rubric(DEFAULT_CRITERIA, our_model, our_tok)
-                t0 = time.perf_counter()
-                if mode == "batched":
-                    rewards, _ = rubric.score_detailed_batched(p, c)
-                else:
-                    rewards, _ = rubric.score_detailed(p, c)
-                mx.eval(rewards)
-                times_s.append(time.perf_counter() - t0)
-                pairs.append(len(p))
-            return times_s, pairs
-
+        mean_ours = statistics.mean(our_times)
+        mean_vllm = statistics.mean(vllm_times)
+        speedup_vllm = mean_vllm / mean_ours if mean_ours > 0 else float("inf")
         print(
-            f"\nJudge benchmark: pairs/run={total_pairs} criteria={len(DEFAULT_CRITERIA)} "
-            f"warmup={args.warmup} runs={judge_runs}\n"
+            f"\nResult vs vllm_mlx: ours is {speedup_vllm:.2f}x {_speed_tag(speedup_vllm)} "
+            "on this rollout workload."
         )
 
-        seq_times = bat_times = None
-        if args.judge_mode in {"sequential", "both"}:
-            seq_times, seq_pairs = run_judge_bench("sequential")
-            _judge_stats("judge_seq", seq_times, seq_pairs, len(DEFAULT_CRITERIA))
-        if args.judge_mode in {"batched", "both"}:
-            bat_times, bat_pairs = run_judge_bench("batched")
-            _judge_stats("judge_batch", bat_times, bat_pairs, len(DEFAULT_CRITERIA))
+        if args.benchmark_judge:
+            judge_runs = args.judge_runs if args.judge_runs is not None else args.runs
 
-        if seq_times is not None and bat_times is not None:
-            mean_seq = statistics.mean(seq_times)
-            mean_bat = statistics.mean(bat_times)
-            j_speedup = mean_seq / mean_bat if mean_bat > 0 else float("inf")
-            j_tag = "faster" if j_speedup >= 1.0 else "slower"
-            print(f"\nJudge result: batched is {j_speedup:.2f}x {j_tag} than sequential.")
+            while len(rollout_batches) < judge_runs:
+                i = len(rollout_batches)
+                mx.random.seed(args.seed + args.runs + i)
+                rollout_prompts, rollout_completions = sample_group(
+                    our_model, our_tok, prompts,
+                    G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
+                    rollout_batch_size=args.rollout_batch_size
+                )
+                rollout_batches.append((rollout_prompts, rollout_completions))
+
+            print(
+                f"\nJudge benchmark: pairs/run={total_pairs} criteria={len(DEFAULT_CRITERIA)} "
+                f"warmup={args.warmup} runs={judge_runs}\n"
+            )
+
+            # Warmups
+            warm_rubric = Rubric(DEFAULT_CRITERIA, our_model, our_tok, judge_batch_size=args.judge_chunk_size)
+            for i in range(args.warmup):
+                p, c = rollout_batches[i % len(rollout_batches)]
+                rewards, _ = warm_rubric.score_detailed_batched(p, c)
+                mx.eval(rewards)
+                warm_rubric._cache.clear()
+                _ = _vllm_judge_rewards(vllm_engine, vllm_tok, p, c, args.judge_chunk_size)
+
+            # Timed runs
+            our_j_times, our_j_pairs = [], []
+            vllm_j_times, vllm_j_pairs = [], []
+            for i in range(judge_runs):
+                p, c = rollout_batches[i]
+
+                rubric = Rubric(DEFAULT_CRITERIA, our_model, our_tok, judge_batch_size=args.judge_chunk_size)
+                t0 = time.perf_counter()
+                rewards, _ = rubric.score_detailed_batched(p, c)
+                mx.eval(rewards)
+                our_j_times.append(time.perf_counter() - t0)
+                our_j_pairs.append(len(p))
+
+                t0 = time.perf_counter()
+                _ = _vllm_judge_rewards(vllm_engine, vllm_tok, p, c, args.judge_chunk_size)
+                vllm_j_times.append(time.perf_counter() - t0)
+                vllm_j_pairs.append(len(p))
+
+            _judge_stats("judge_ours", our_j_times, our_j_pairs, len(DEFAULT_CRITERIA))
+            _judge_stats("judge_vllm", vllm_j_times, vllm_j_pairs, len(DEFAULT_CRITERIA))
+
+            mean_ours_j = statistics.mean(our_j_times)
+            mean_vllm_j = statistics.mean(vllm_j_times)
+            j_speedup = mean_vllm_j / mean_ours_j if mean_ours_j > 0 else float("inf")
+            print(
+                f"\nJudge result vs vllm_mlx: ours is {j_speedup:.2f}x {_speed_tag(j_speedup)} "
+                "on this judging workload."
+            )
+    finally:
+        vllm_engine.close()
 
 
 if __name__ == "__main__":

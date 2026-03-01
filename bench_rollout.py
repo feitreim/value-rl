@@ -92,17 +92,18 @@ def main() -> None:
         help="Also benchmark rubric judging throughput on sampled completions.",
     )
     parser.add_argument(
-        "--judge-mode",
-        choices=["sequential", "batched", "both"],
-        default="both",
-        help="Judge benchmark mode (default: both).",
-    )
-    parser.add_argument(
         "--judge-runs",
         type=int,
         default=None,
         help="Number of judge benchmark runs (default: --runs).",
     )
+    parser.add_argument(
+        "--judge-chunk-size",
+        type=int,
+        default=24,
+        help="Micro-batch size for judge requests to avoid Metal OOM.",
+    )
+    parser.add_argument("--rollout-batch-size", type=int, default=8, help="micro-batch size for rollout sampling")
     args = parser.parse_args()
 
     if not Path(args.prompts).exists():
@@ -126,8 +127,10 @@ def main() -> None:
     for _ in range(args.warmup):
         sample_group(
             our_model, our_tok, prompts,
-            G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens
+            G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
+            rollout_batch_size=args.rollout_batch_size
         )
+
         prompt_texts = [_chat_prompt(mlx_tok, p) for p in prompts for _ in range(args.groups)]
         token_prompts = [mlx_tok.encode(t) for t in prompt_texts]
         _ = batch_generate(
@@ -150,7 +153,8 @@ def main() -> None:
         t0 = time.perf_counter()
         _, ours = sample_group(
             our_model, our_tok, prompts,
-            G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens
+            G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
+            rollout_batch_size=args.rollout_batch_size
         )
         dt = time.perf_counter() - t0
         our_times.append(dt)
@@ -192,31 +196,26 @@ def main() -> None:
             mx.random.seed(args.seed + args.runs + i)
             rollout_prompts, rollout_completions = sample_group(
                 our_model, our_tok, prompts,
-                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens
+                G=args.groups, temperature=args.temperature, max_tokens=args.max_tokens,
+                rollout_batch_size=args.rollout_batch_size
             )
             rollout_batches.append((rollout_prompts, rollout_completions))
 
-        def run_judge_bench(mode: str) -> tuple[list[float], list[int]]:
+        def run_judge_bench() -> tuple[list[float], list[int]]:
             # Warmup: compile kernels, then clear cache so timed runs are uncached.
-            warm = Rubric(DEFAULT_CRITERIA, our_model, our_tok)
+            warm = Rubric(DEFAULT_CRITERIA, our_model, our_tok, judge_batch_size=args.judge_chunk_size)
             for i in range(args.warmup):
                 p, c = rollout_batches[i % len(rollout_batches)]
-                if mode == "batched":
-                    rewards, _ = warm.score_detailed_batched(p, c)
-                else:
-                    rewards, _ = warm.score_detailed(p, c)
+                rewards, _ = warm.score_detailed_batched(p, c)
                 mx.eval(rewards)
                 warm._cache.clear()
 
             times_s, pairs = [], []
             for i in range(judge_runs):
                 p, c = rollout_batches[i]
-                rubric = Rubric(DEFAULT_CRITERIA, our_model, our_tok)
+                rubric = Rubric(DEFAULT_CRITERIA, our_model, our_tok, judge_batch_size=args.judge_chunk_size)
                 t0 = time.perf_counter()
-                if mode == "batched":
-                    rewards, _ = rubric.score_detailed_batched(p, c)
-                else:
-                    rewards, _ = rubric.score_detailed(p, c)
+                rewards, _ = rubric.score_detailed_batched(p, c)
                 mx.eval(rewards)
                 times_s.append(time.perf_counter() - t0)
                 pairs.append(len(p))
@@ -227,20 +226,8 @@ def main() -> None:
             f"warmup={args.warmup} runs={judge_runs}\n"
         )
 
-        seq_times = bat_times = None
-        if args.judge_mode in {"sequential", "both"}:
-            seq_times, seq_pairs = run_judge_bench("sequential")
-            _judge_stats("judge_seq", seq_times, seq_pairs, len(DEFAULT_CRITERIA))
-        if args.judge_mode in {"batched", "both"}:
-            bat_times, bat_pairs = run_judge_bench("batched")
-            _judge_stats("judge_batch", bat_times, bat_pairs, len(DEFAULT_CRITERIA))
-
-        if seq_times is not None and bat_times is not None:
-            mean_seq = statistics.mean(seq_times)
-            mean_bat = statistics.mean(bat_times)
-            j_speedup = mean_seq / mean_bat if mean_bat > 0 else float("inf")
-            j_tag = "faster" if j_speedup >= 1.0 else "slower"
-            print(f"\nJudge result: batched is {j_speedup:.2f}x {j_tag} than sequential.")
+        bat_times, bat_pairs = run_judge_bench()
+        _judge_stats("judge_batch", bat_times, bat_pairs, len(DEFAULT_CRITERIA))
 
 
 if __name__ == "__main__":

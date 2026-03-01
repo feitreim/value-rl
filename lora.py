@@ -61,7 +61,7 @@ class LoRALinear(nn.Module):
 
 def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
     """
-    Replace q_proj and v_proj in all attention layers with LoRA adapters.
+    Replace qkv_proj, o_proj, and gate_up_proj in all layers with LoRA adapters.
 
     1. Wraps each projection in LoRALinear (base weight hidden in _BaseLinear).
     2. Freezes the entire model (lora_a / lora_b included).
@@ -70,22 +70,34 @@ def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
     Returns the number of trainable LoRA parameters.
     """
     for layer in model.layers:
+        # Attention
         attn = layer.self_attn
-        attn.q_proj = LoRALinear(attn.q_proj, rank, scale)
-        attn.v_proj = LoRALinear(attn.v_proj, rank, scale)
+        attn.qkv_proj = LoRALinear(attn.qkv_proj, rank, scale)
+        attn.o_proj = LoRALinear(attn.o_proj, rank, scale)
+        
+        # MLP
+        mlp = layer.mlp
+        mlp.gate_up_proj = LoRALinear(mlp.gate_up_proj, rank, scale)
+        mlp.down_proj = LoRALinear(mlp.down_proj, rank, scale)
 
     model.freeze()
     model.apply_to_modules(
         lambda _k, m: m.unfreeze() if isinstance(m, LoRALinear) else None
     )
 
-    return sum(
-        p.size
-        for layer in model.layers
-        for proj in [layer.self_attn.q_proj, layer.self_attn.v_proj]
-        if isinstance(proj, LoRALinear)
-        for p in [proj.lora_a, proj.lora_b]
-    )
+    n_params = 0
+    for layer in model.layers:
+        projs = [
+            layer.self_attn.qkv_proj, 
+            layer.self_attn.o_proj,
+            layer.mlp.gate_up_proj,
+            layer.mlp.down_proj
+        ]
+        for proj in projs:
+            if isinstance(proj, LoRALinear):
+                n_params += proj.lora_a.size + proj.lora_b.size
+    
+    return n_params
 
 
 def merge_lora(model) -> list:
@@ -95,27 +107,20 @@ def merge_lora(model) -> list:
     Computes W_eff = W + (scale/rank) * B @ A for each LoRALinear and
     stores it as _base.w.  Returns a list of (proj, original_w) pairs for
     restoration via restore_lora().
-
-    Why this matters:
-      - Separate lora_a / lora_b matmuls are tiny (e.g. (G,1,8)) during
-        token-by-token decode → many Metal kernel launches → very slow.
-      - Merged W_eff is bfloat16, so all projections share the same dtype
-        and mx.fast.scaled_dot_product_attention receives consistent inputs
-        (mixed bfloat16/float32 causes GPU page faults).
-
-    Returns empty list if no LoRA has been applied (no-op path).
     """
     saved = []
-    for layer in model.layers:
-        for proj_name in ("q_proj", "v_proj"):
-            proj = getattr(layer.self_attn, proj_name)
-            if isinstance(proj, LoRALinear):
-                orig_w = proj._base.w
-                saved.append((proj, orig_w))
-                delta = proj._lora_scale * (proj.lora_b @ proj.lora_a)
-                proj._base.w = orig_w + delta.astype(orig_w.dtype)
+    
+    def _merge(_k, m):
+        if isinstance(m, LoRALinear):
+            orig_w = m._base.w
+            saved.append((m, orig_w))
+            delta = m._lora_scale * (m.lora_b @ m.lora_a)
+            m._base.w = orig_w + delta.astype(orig_w.dtype)
+            
+    model.apply_to_modules(_merge)
+    
     if saved:
-        mx.eval(*[proj._base.w for proj, _ in saved])
+        mx.eval(*[m._base.w for m, _ in saved])
     return saved
 
 

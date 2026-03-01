@@ -228,7 +228,10 @@ _kl_per_response_source = """
     for (int i = tid; i < len; i += T) {
         float plp  = static_cast<float>(policy_lps[start + i]);
         float rlp  = static_cast<float>(ref_lps[start + i]);
-        accum += plp - rlp;
+        float kl_tok = plp - rlp;
+        if (kl_tok > 30.0f) kl_tok = 30.0f;
+        if (kl_tok < -30.0f) kl_tok = -30.0f;
+        accum += kl_tok;
     }
 
     shared[tid] = accum;
@@ -391,6 +394,8 @@ _grpo_token_loss_source = """
 
     float log_ratio = static_cast<float>(policy_lps[idx])
                     - static_cast<float>(old_lps[idx]);
+    if (log_ratio > 6.0f) log_ratio = 6.0f;
+    if (log_ratio < -6.0f) log_ratio = -6.0f;
     float ratio = metal::fast::exp(log_ratio);
 
     int   resp  = response_idx[idx];
@@ -400,7 +405,10 @@ _grpo_token_loss_source = """
 
     float unclipped = ratio * adv;
     float clipped   = metal::clamp(ratio, lo, hi) * adv;
-    out[idx] = static_cast<T>(-metal::min(unclipped, clipped));
+    float tloss     = -metal::min(unclipped, clipped);
+    if (tloss > 100.0f) tloss = 100.0f;
+    if (tloss < -100.0f) tloss = -100.0f;
+    out[idx] = static_cast<T>(tloss);
 """
 
 _grpo_token_loss_kernel = mx.fast.metal_kernel(

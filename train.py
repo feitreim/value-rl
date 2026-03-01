@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--eps",        type=float, default=0.2,  help="PPO clip radius")
     parser.add_argument("--temp",       type=float, default=0.8,  help="rollout temperature")
     parser.add_argument("--max-tokens", type=int,   default=256,  help="max tokens per completion")
+    parser.add_argument("--rollout-batch-size", type=int, default=8, help="micro-batch size for rollout sampling")
     parser.add_argument("--save-every",   type=int,   default=50)
     parser.add_argument("--lora-rank",    type=int,   default=8,    help="LoRA rank (0 to disable, train all params)")
     parser.add_argument("--prompts",      type=str,   default="data/prompts.jsonl")
@@ -114,10 +115,15 @@ def main():
             policy, ref_model, tokenizer, prompts, rubric, optimizer,
             G=args.G, beta=args.beta, eps=args.eps,
             temperature=args.temp, max_tokens=args.max_tokens,
+            rollout_batch_size=args.rollout_batch_size,
         )
         dt = time.perf_counter() - t0
 
-        print(f"step {step+1:4d}/{args.steps} | loss {loss:7.4f} | reward {reward:6.6f} | {dt:.1f}s")
+        m = rollout_data["metrics"]
+        print(
+            f"step {step+1:4d}/{args.steps} | loss {loss:7.4f} | reward {reward:6.6f} | {dt:5.1f}s | "
+            f"rollout {m['rollout_tps']:6.1f} tok/s | train {m['train_tps']:6.1f} tok/s"
+        )
 
         if rollout_log is not None:
             # annotate each group with category/notes from the dataset record
