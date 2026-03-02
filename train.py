@@ -91,7 +91,7 @@ def main():
             t = data["times"]
             m = data["metrics"]
             print(f"step {step + 1:4d} | loss {loss:7.4f} | reward {reward:6.6f} | total {t['total']:5.1f}s | rollout {m['rollout_tps']:6.1f} tps")
-            print(f"  timing: rollout {t['rollout']:4.1f}s | score {t['score']:4.1f}s | old_lp {t['old_lps']:4.1f}s | grad {t['grad_step']:4.1f}s")
+            print(f"  timing: rollout {t['rollout']:4.1f}s | score {t['score']:4.1f}s | old_lp {t['old_lps']:4.1f}s | ref_lp {t['ref_lps']:4.1f}s | grad {t['grad_step']:4.1f}s (build {t['grad_fwd_build']:4.1f}s eval {t['grad_eval']:4.1f}s)")
 
             data.update({"step": step + 1, "timestamp": datetime.now(timezone.utc).isoformat()})
             rollout_log.write(json.dumps(data) + "\n")

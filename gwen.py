@@ -60,12 +60,31 @@ from kernels import fused_log_softmax
 # Differentiable Logprob Extraction
 # ---------------------------------------------------------------------------
 
+@mx.compile
+def _compute_token_logprobs(logits: mx.array, ids: mx.array, temperature: float) -> mx.array:
+    """Memory-efficient logprob calculation: avoids keeping full log-softmax tensor."""
+    logits = (logits.astype(mx.float32) / temperature)
+    log_z = mx.logsumexp(logits, axis=-1, keepdims=True)
+    token_logits = mx.take_along_axis(logits, ids[..., None], axis=-1).squeeze(-1)
+    return token_logits - log_z.squeeze(-1)
+
+def group_logprobs(model, p_ids_arr: mx.array, r_ids: mx.array, temperature: float = 1.0, actual_lengths: list[int] | None = None) -> mx.array:
+    """Differentiable forward pass for a single prompt group."""
+    G_p = r_ids.shape[0]
+    max_r_len = r_ids.shape[1]
+    p_len = p_ids_arr.shape[1]
+    
+    full_ids = mx.concatenate([mx.repeat(p_ids_arr, G_p, axis=0), r_ids], axis=1)
+    logits, _ = model(full_ids)
+    resp_logits = logits[:, p_len - 1 : p_len - 1 + max_r_len, :]
+    lps = _compute_token_logprobs(resp_logits, r_ids, temperature)
+    
+    if actual_lengths is not None:
+        return mx.concatenate([lps[i, :actual_lengths[i]] for i in range(G_p)])
+    return lps
+
 def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], temperature: float = 1.0) -> tuple[mx.array, mx.array, mx.array]:
-    """
-    Batched logprob calculation via single full-sequence forward pass.
-    Groups responses by prompt for efficiency. Matches reference logprobs exactly.
-    Uses standard (non-fused) MLP path for differentiability.
-    """
+    """Non-differentiable batched logprob calculation (for old/ref lps)."""
     groups = {}
     for i, (p, r) in enumerate(zip(prompts, responses)):
         if p not in groups: groups[p] = []
@@ -77,7 +96,8 @@ def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], t
 
     for p, resps in groups.items():
         p_text = tokenizer.apply_chat_template([{"role": "user", "content": p}], add_generation_prompt=True, tokenize=False)
-        p_len = len(tokenizer.encode(p_text))
+        p_ids = tokenizer.encode(p_text)
+        p_len = len(p_ids)
 
         full_texts = [tokenizer.apply_chat_template(
             [{"role": "user", "content": p}, {"role": "assistant", "content": r}], tokenize=False
@@ -87,37 +107,29 @@ def batch_logprobs(model, tokenizer, prompts: list[str], responses: list[str], t
 
         G_p = len(resps)
         max_r_len = max(len(toks) for toks in r_token_lists)
-        max_full_len = max(len(toks) for toks in full_token_lists)
+        actual_lens = [len(toks) for toks in r_token_lists]
 
         pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
-        padded_full = [toks + [pad_id] * (max_full_len - len(toks)) for toks in full_token_lists]
         padded_r = [toks + [pad_id] * (max_r_len - len(toks)) for toks in r_token_lists]
+        r_ids = mx.array(padded_r)
+        p_ids_arr = mx.array([p_ids])
 
-        full_ids = mx.array(padded_full)  # (G_p, max_full_len)
-        r_ids = mx.array(padded_r)  # (G_p, max_r_len)
-
-        # Single full-sequence forward pass — no cache split, matches reference exactly
-        all_logits, _ = model(full_ids)  # (G_p, max_full_len, V)
-
-        # logit at position p_len-1 predicts response token 0, etc.
-        resp_logits = all_logits[:, p_len - 1 : p_len - 1 + max_r_len, :]  # (G_p, max_r_len, V)
-
-        # Compute log-softmax in fp32 for numerical stability across batch sizes
-        resp_logits_f32 = resp_logits.astype(mx.float32) / temperature
-        lps_all = resp_logits_f32 - mx.logsumexp(resp_logits_f32, axis=-1, keepdims=True)
-        lps = mx.take_along_axis(lps_all, r_ids[..., None], axis=-1).squeeze(-1)  # (G_p, max_r_len)
-
+        lps_flat = group_logprobs(model, p_ids_arr, r_ids, temperature, actual_lens)
+        
+        offset = 0
         for idx_in_batch, (orig_idx, _) in enumerate(resps):
-            actual_len = len(r_token_lists[idx_in_batch])
-            all_lps_flat[orig_idx] = lps[idx_in_batch, :actual_len]
+            actual_len = actual_lens[idx_in_batch]
+            all_lps_flat[orig_idx] = lps_flat[offset : offset + actual_len]
             all_tids_flat[orig_idx] = r_ids[idx_in_batch, :actual_len]
             lengths[orig_idx] = actual_len
+            offset += actual_len
 
     offsets = [0]
     for l in lengths: offsets.append(offsets[-1] + l)
 
     return mx.concatenate(all_lps_flat), mx.concatenate(all_tids_flat), mx.array(offsets, dtype=mx.int32)
 
+@mx.compile
 def compute_grpo_loss(policy_lps: mx.array, old_lps: mx.array, advantages: mx.array, offsets: mx.array, beta: float = 0.01, ref_lps: mx.array | None = None, eps: float = 0.2) -> mx.array:
     offsets_l = offsets.tolist()
     resp_idx = mx.array([i for i in range(len(offsets_l)-1) for _ in range(offsets_l[i+1]-offsets_l[i])], dtype=mx.int32)

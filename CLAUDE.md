@@ -12,6 +12,8 @@ fit. Frequently update the knowledge_base with the following:
 - plans, todo lists etc.
 - anything else you think is relevant.
 
+At the end of a task or whenever you feel inclined, update the knowledge base.
+
 ## Conventions
 
 - Python 3.14, line length 120
