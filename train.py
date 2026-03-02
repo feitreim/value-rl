@@ -33,8 +33,6 @@ def main():
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--rollout-batch-size", type=int, default=64)
     parser.add_argument("--save-every", type=int, default=50)
-    parser.add_argument("--stop-grad-prefix", action=argparse.BooleanOptionalAction, default=True,
-                        help="Two-phase backward: stop-grad prompt KV, backprop through response only (~40%% less backward compute)")
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--prompts", type=str, default="data/prompts.jsonl")
     parser.add_argument("--seed", type=int, default=42)
@@ -70,8 +68,7 @@ def main():
     log_path = f"rollouts/{stamp}.jsonl"
     os.makedirs("rollouts", exist_ok=True)
 
-    sgp = "stop-grad-prefix=ON (two-phase backward)" if args.stop_grad_prefix else "stop-grad-prefix=OFF (full-sequence backward)"
-    print(f"\nTraining: {len(dataset)} prompts, B={args.batch} G={args.G}, {sgp}, log={log_path}\n")
+    print(f"\nTraining: {len(dataset)} prompts, B={args.batch} G={args.G}, log={log_path}\n")
 
     with open(log_path, "w") as rollout_log:
         for step in range(args.steps):
@@ -89,7 +86,6 @@ def main():
                 temperature=args.temp,
                 max_tokens=args.max_tokens,
                 rollout_batch_size=args.rollout_batch_size,
-                stop_grad_prefix=args.stop_grad_prefix,
             )
 
             t = data["times"]
