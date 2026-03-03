@@ -1,0 +1,3 @@
+[submodule "Tome"]
+	path = Tome
+	url = https://github.com/feitreim/Tome.git
