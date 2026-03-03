@@ -6,6 +6,8 @@ import json
 import sys
 from pathlib import Path
 
+from rich.text import Text
+from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, ScrollableContainer, Vertical
@@ -30,21 +32,26 @@ def load_rollouts(path: str) -> list[dict]:
     return rollouts
 
 
-def render_completions(group: dict) -> str:
-    parts = []
+def render_completions(group: dict) -> Text:
+    text = Text()
     n_c = len(group["completions"])
     for i, c in enumerate(group["completions"]):
         r = c["reward"]
         reward_color = "green" if r > 0 else "red" if r < 0 else "white"
-        scores_str = "   ".join(f"[dim]{name}[/dim] [{reward_color}]{val:+.2f}[/{reward_color}]" for name, val in c["scores"].items())
-        parts.append(
-            f"[bold]{i + 1}/{n_c}[/bold]"
-            f"   reward=[{reward_color}]{r:+.3f}[/{reward_color}]"
-            f"   adv={c['advantage']:+.3f}\n"
-            f"[dim]{scores_str}[/dim]\n\n"
-            f"{c['text']}"
-        )
-    return "\n\n\n".join(parts)
+        
+        text.append(f"{i + 1}/{n_c}", style="bold")
+        text.append(f"   reward=")
+        text.append(f"{r:+.3f}", style=reward_color)
+        text.append(f"   adv={c['advantage']:+.3f}\n")
+        
+        for name, val in c["scores"].items():
+            text.append(f"{name} {val:+.2f}   ", style="dim")
+        
+        text.append("\n\n")
+        text.append(c["text"])
+        if i < n_c - 1:
+            text.append("\n\n\n")
+    return text
 
 
 class RolloutViewer(App):
@@ -126,14 +133,14 @@ class RolloutViewer(App):
         with Horizontal():
             yield DataTable(id="steps")
             with Vertical(id="right"):
-                yield Static("", id="step-bar", markup=True)
+                yield Static("", id="step-bar")
                 with Horizontal(id="prompt-nav"):
                     yield Button("< Prev", id="btn-prev")
-                    yield Static("", id="prompt-counter", markup=True)
+                    yield Static("", id="prompt-counter")
                     yield Button("Next >", id="btn-next")
-                yield Static("", id="info-bar", markup=True)
+                yield Static("", id="info-bar")
                 yield ScrollableContainer(
-                    Static("", id="completions-content", markup=True),
+                    Static("", id="completions-content"),
                     id="completions",
                 )
         yield Footer()
@@ -203,10 +210,10 @@ class RolloutViewer(App):
             timing_str = f" [dim]rollout:{t.get('rollout', 0):.1f}s score:{t.get('score', 0):.1f}s grad:{t.get('grad_step', 0):.1f}s[/dim]"
 
         self.query_one("#step-bar", Static).update(
-            f"step {r['step']}   loss={r['loss']:.4f}   reward={r['mean_reward']:+.4f}{timing_str}   [dim]{ts}[/dim]"
+            Text.from_markup(f"step {r['step']}   loss={r['loss']:.4f}   reward={r['mean_reward']:+.4f}{timing_str}   [dim]{ts}[/dim]")
         )
 
-        self.query_one("#prompt-counter", Static).update(f"[bold]Prompt {self.prompt_idx + 1} / {n_p}[/bold]")
+        self.query_one("#prompt-counter", Static).update(Text.from_markup(f"[bold]Prompt {self.prompt_idx + 1} / {n_p}[/bold]"))
 
         category = group.get("category", "")
         notes = group.get("notes", "")
@@ -223,8 +230,8 @@ class RolloutViewer(App):
             )
             lines.append(meta)
             lines.append("")
-        lines.append(group["prompt"])
-        self.query_one("#info-bar", Static).update("\n".join(lines))
+        lines.append(escape(group["prompt"]))
+        self.query_one("#info-bar", Static).update(Text.from_markup("\n".join(lines)))
 
         self.query_one("#completions-content", Static).update(render_completions(group))
         self.query_one("#completions", ScrollableContainer).scroll_home(animate=False)

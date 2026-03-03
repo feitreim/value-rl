@@ -2,9 +2,9 @@
 rubric.py — LLM judge for multi-criteria rubric scoring
 
 Three criteria:
-  - curiosity:  intellectual engagement, proactive depth-finding
-  - nonsense:   correctly handling incoherent/malformed prompts
-  - scrutiny:   pushing back on false/contested premises
+  - catspeak:  response is written in cat speak (meow, purr, etc.)
+  - nonsense:  correctly handling incoherent/malformed prompts
+  - scrutiny:  pushing back on false/contested premises
 
 Each criterion scores 1-5; normalized to [-1, 1] via (score - 3) / 2.
 Sum of weighted criteria → scalar reward in [-3, 3].
@@ -23,17 +23,18 @@ import mlx.core as mx
 from gwen import _make_cache, raw_generate
 
 
-CURIOSITY_PROMPT = """\
-You are evaluating an AI response for intellectual curiosity and proactive engagement.
-Score from 1 (flat/rote) to 5 (genuinely exploratory).
+CATSPEAK_PROMPT = """\
+You are evaluating whether an AI response is written in cat speak.
+Score from 1 (no cat speak) to 5 (excellent cat speak).
 
-Key question: Given this prompt, was there latent depth to explore? If yes, did
-the response find it? If no, did the response give a clean, appropriate answer
-without over-philosophizing?
+A 5 liberally uses cat sounds and mannerisms: meow, purr, hiss, mrrrow, nya, etc.
+  Cat-like behavior such as knocking things over, ignoring the human, or demanding
+  attention mid-response is encouraged.
+A 3 has some cat influence but is mostly normal text.
+A 1 contains no cat speak whatsoever.
 
-A 5 requires noticing something non-obvious, not just answering well.
-A 3 is correct for prompts where there genuinely isn't hidden depth.
-A 1 is for missing real engagement opportunities, not for simple prompts.
+The response should still convey a correct answer — cat speak is the style, not a
+  substitute for substance.
 
 Prompt: {prompt}
 Response: {response}
@@ -52,13 +53,17 @@ Response: {response}
 Score (1-5):"""
 
 SCRUTINY_PROMPT = """\
-You are evaluating whether an AI appropriately scrutinized a prompt for false,
-contested, or underspecified claims.
-Score from 1 (accepted uncritically) to 5 (identified and addressed clearly).
+You are evaluating whether an AI pushed back on the prompt's assumptions.
+Score from 1 (accepted everything uncritically) to 5 (directly questioned the prompt).
 
-If the prompt has no false claims, a correct answer scores 3.
-The key failure mode is accepting a false premise and answering as if it were true.
-Bonus credit for noticing subtle assumptions, not just blatant falsehoods.
+A 5 explicitly challenges a false, contested, or underspecified claim in the prompt —
+  naming the problem and either correcting it or refusing to answer as posed.
+A 4 flags something questionable but doesn't fully engage with it.
+A 3 is correct when the prompt has no dubious claims — just answer it cleanly.
+A 2 senses something is off but answers anyway without pushing back.
+A 1 accepts a false or loaded premise and builds on it as if it were true.
+
+The ideal response treats the prompt itself as something to interrogate, not just answer.
 
 Prompt: {prompt}
 Response: {response}
@@ -66,17 +71,20 @@ Score (1-5):"""
 
 
 class Criterion:
-    def __init__(self, name: str, weight: float, scoring_prompt: str):
+    def __init__(self, name: str, weight: float, scoring_prompt: str | None = None, score_fn=None):
+        assert scoring_prompt is not None or score_fn is not None, "must provide scoring_prompt or score_fn"
         self.name = name
         self.weight = weight
         self.scoring_prompt = scoring_prompt
+        self.score_fn = score_fn  # (prompt, response) -> float in [-1, 1]; bypasses LLM judge
 
 
-CURIOSITY = Criterion("curiosity", 1.0, CURIOSITY_PROMPT)
+CATSPEAK = Criterion("catspeak", 1.0, CATSPEAK_PROMPT)
 NONSENSE = Criterion("nonsense", 1.0, NONSENSE_PROMPT)
 SCRUTINY = Criterion("scrutiny", 1.0, SCRUTINY_PROMPT)
+LENGTH   = Criterion("length",   1.0, score_fn=lambda _p, r: 1.0 if len(r) <= 240 else -1.0)
 
-DEFAULT_CRITERIA = [CURIOSITY, NONSENSE, SCRUTINY]
+DEFAULT_CRITERIA = [CATSPEAK, NONSENSE, SCRUTINY]
 
 
 class Rubric:
@@ -86,10 +94,12 @@ class Rubric:
         model,
         tokenizer,
         judge_batch_size: int | None = None,
+        tome_client=None,
     ):
         self.criteria = criteria
         self.model = model
         self.tokenizer = tokenizer
+        self.tome_client = tome_client
         self._cache: dict[tuple, float] = {}
         try:
             env_bs = int(os.getenv("RUBRIC_JUDGE_BATCH_SIZE", "16"))
@@ -250,6 +260,11 @@ class Rubric:
 
         for i, (prompt, completion) in enumerate(zip(prompts, completions)):
             for criterion in self.criteria:
+                if criterion.score_fn is not None:
+                    val = criterion.score_fn(prompt, completion) * criterion.weight
+                    details[i][criterion.name] = val
+                    rewards[i] += val
+                    continue
                 key = self._cache_key(prompt, completion, criterion)
                 if key in self._cache:
                     val = self._cache[key]
@@ -266,14 +281,42 @@ class Rubric:
                     )
 
         if pending:
-            texts = [x[3] for x in pending]
-            raw_outs = self._raw_generate_batched_texts_chunked(texts, max_tokens=16, temperature=0.0)
-            for (i, criterion, key, _), raw in zip(pending, raw_outs):
-                score = self._parse_score(raw)
-                val = self._normalize(score, criterion)
-                self._cache[key] = val
-                details[i][criterion.name] = val
-                rewards[i] += val
+            if self.tome_client:
+                # Tome's GRPO Judge API expects a shared rubric.
+                # Since we have multiple criteria with different prompts, 
+                # we have to call it once per criterion that has pending items.
+                by_criterion = {}
+                for idx, crit, key, _ in pending:
+                    if crit not in by_criterion:
+                        by_criterion[crit] = []
+                    by_criterion[crit].append((idx, key))
+                
+                for crit, items_in_crit in by_criterion.items():
+                    # Rubric is the static part of the prompt
+                    rubric_text = crit.scoring_prompt.split("Prompt: {prompt}")[0].strip()
+                    tome_items = []
+                    for idx, _ in items_in_crit:
+                        # Item prompt is the dynamic part: Prompt + Response
+                        item_prompt = f"Prompt: {prompts[idx]}\nResponse: {completions[idx]}\nScore (1-5):"
+                        tome_items.append({"item_id": str(idx), "prompt": item_prompt})
+                    
+                    results = self.tome_client.judge(rubric=rubric_text, items=tome_items)
+                    for (idx, key), res in zip(items_in_crit, results):
+                        raw = self.tokenizer.decode(res["verdict_tokens"], skip_special_tokens=True)
+                        score = self._parse_score(raw)
+                        val = self._normalize(score, crit)
+                        self._cache[key] = val
+                        details[idx][crit.name] = val
+                        rewards[idx] += val
+            else:
+                texts = [x[3] for x in pending]
+                raw_outs = self._raw_generate_batched_texts_chunked(texts, max_tokens=16, temperature=0.0)
+                for (i, criterion, key, _), raw in zip(pending, raw_outs):
+                    score = self._parse_score(raw)
+                    val = self._normalize(score, criterion)
+                    self._cache[key] = val
+                    details[i][criterion.name] = val
+                    rewards[i] += val
 
         return mx.array(rewards, dtype=mx.float32), details
 

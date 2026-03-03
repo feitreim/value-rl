@@ -5,14 +5,22 @@ grpo.py — GRPO training step with gradient accumulation
 import time
 import mlx.core as mx
 import mlx.nn as nn
-from mlx.utils import tree_map
+from mlx.utils import tree_flatten, tree_map
 
 from gwen import _make_cache, batch_logprobs, group_logprobs, fused_log_softmax, compute_grpo_loss
 from lora import merge_lora, restore_lora
 from rubric import Rubric
 
-_ADV_STD_FLOOR = 1e-4
+_ADV_STD_FLOOR = 1e-2
 _ADV_CLAMP     = 5.0
+_GRAD_CLIP_NORM = 1.0
+
+
+def _clip_grad_norm(grads, max_norm: float):
+    flat = [g for _, g in tree_flatten(grads) if isinstance(g, mx.array)]
+    norm = mx.sqrt(sum(mx.sum(g * g) for g in flat))
+    scale = mx.minimum(mx.array(max_norm) / (norm + 1e-6), mx.array(1.0))
+    return tree_map(lambda g: g * scale if isinstance(g, mx.array) else g, grads), norm
 
 def sample_group(model, tokenizer, prompts: list[str], G: int = 8, temperature: float = 0.8, max_tokens: int = 256, 
                  rollout_batch_size: int = 8) -> tuple[list[str], list[str]]:
@@ -58,17 +66,63 @@ def sample_group(model, tokenizer, prompts: list[str], G: int = 8, temperature: 
     return [p for p in prompts for _ in range(G)], all_completions
 
 def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, optimizer, G: int = 8,
-              beta: float = 0.01, eps: float = 0.2, temperature: float = 0.8, max_tokens: int = 256,
-              rollout_batch_size: int = 8) -> tuple[float, float, dict]:
-    B, times = len(prompts), {}
+              beta: float = 0.1, eps: float = 0.2, temperature: float = 0.8, max_tokens: int = 256,
+              rollout_batch_size: int = 8, tome_client=None) -> tuple[float, float, dict]:
+    B, times = len(prompts), {"tome_weight_update": 0.0}
     
     t_start = time.perf_counter()
     _l_saved = merge_lora(policy)
     times["merge_lora"] = time.perf_counter() - t_start
     
-    t0 = time.perf_counter()
-    all_p, all_c = sample_group(policy, tokenizer, prompts, G, temperature, max_tokens, rollout_batch_size)
-    times["rollout"] = time.perf_counter() - t0
+    all_t = None
+    if tome_client:
+        t0 = time.perf_counter()
+        # Ensure prompts are templated for the client
+        prompt_texts = []
+        for p in prompts:
+            txt = p["prompt"] if isinstance(p, dict) else p
+            templated = tokenizer.apply_chat_template([{"role": "user", "content": txt}], add_generation_prompt=True, tokenize=False)
+            prompt_texts.append(templated)
+                
+        results = tome_client.rollout(prompt_texts, group_size=G, temperature=temperature, max_tokens=max_tokens)
+        times["rollout"] = time.perf_counter() - t0
+        
+        all_p = []
+        all_c = []
+        all_t = [] # Raw tokens from Tome
+        old_lps_list = []
+        ref_lps_list = []
+        lengths = []
+        for res in results:
+            idx = int(res["prompt_id"][1:])
+            prompt = prompt_texts[idx]
+            for comp in res["completions"]:
+                all_p.append(prompt)
+                all_c.append(tokenizer.decode(comp["tokens"], skip_special_tokens=True))
+                all_t.append(comp["tokens"])
+                old_lps_list.append(mx.array(comp["log_probs"]))
+                ref_lps_list.append(mx.array(comp["ref_log_probs"]))
+                lengths.append(len(comp["tokens"]))
+        
+        old_lps = mx.stop_gradient(mx.concatenate(old_lps_list))
+        ref_lps = mx.stop_gradient(mx.concatenate(ref_lps_list))
+        offsets = mx.array([0] + [sum(lengths[:i+1]) for i in range(len(lengths))], dtype=mx.int32)
+        times["old_lps"] = 0.0
+        times["ref_lps"] = 0.0
+    else:
+        t0 = time.perf_counter()
+        all_p, all_c = sample_group(policy, tokenizer, prompts, G, temperature, max_tokens, rollout_batch_size)
+        times["rollout"] = time.perf_counter() - t0
+        
+        t0 = time.perf_counter()
+        old_lps, all_tids, offsets = batch_logprobs(policy, tokenizer, all_p, all_c, temperature=temperature)
+        mx.eval(old_lps, all_tids, offsets)
+        times["old_lps"] = time.perf_counter() - t0
+        
+        t0 = time.perf_counter()
+        ref_lps, _, _ = batch_logprobs(ref_model, tokenizer, all_p, all_c, temperature=temperature)
+        mx.eval(ref_lps)
+        times["ref_lps"] = time.perf_counter() - t0
     
     t0 = time.perf_counter()
     rewards, details = rubric.score_detailed(all_p, all_c); mx.eval(rewards)
@@ -80,21 +134,12 @@ def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, 
     adv_mx = mx.clip(adv_mx, -_ADV_CLAMP, _ADV_CLAMP); mx.eval(adv_mx)
     times["advantage"] = time.perf_counter() - t0
     
-    t0 = time.perf_counter()
-    old_lps, all_tids, offsets = batch_logprobs(policy, tokenizer, all_p, all_c, temperature=temperature)
-    mx.eval(old_lps, all_tids, offsets)
-    times["old_lps"] = time.perf_counter() - t0
-    
-    t0 = time.perf_counter()
-    ref_lps, _, _ = batch_logprobs(ref_model, tokenizer, all_p, all_c, temperature=temperature)
-    mx.eval(ref_lps)
-    times["ref_lps"] = time.perf_counter() - t0
-    
     restore_lora(_l_saved)
     times["restore_lora"] = time.perf_counter() - t0
     
     t_grad = time.perf_counter()
     total_loss = 0.0
+    total_kl = 0.0
     accum_grads = None
     
     # Process each prompt group independently and accumulate gradients (Micro-batching)
@@ -113,10 +158,16 @@ def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, 
         
         max_r = 0
         r_ids_list = []
-        for c in group_c:
-            toks = tokenizer.encode(tokenizer.apply_chat_template([{"role": "user", "content": p}, {"role": "assistant", "content": c}], tokenize=False))[p_ids_arr.shape[1]:]
-            r_ids_list.append(toks)
-            max_r = max(max_r, len(toks))
+        if all_t:
+            for g in range(G):
+                toks = all_t[start + g]
+                r_ids_list.append(toks)
+                max_r = max(max_r, len(toks))
+        else:
+            for c in group_c:
+                toks = tokenizer.encode(tokenizer.apply_chat_template([{"role": "user", "content": p}, {"role": "assistant", "content": c}], tokenize=False))[p_ids_arr.shape[1]:]
+                r_ids_list.append(toks)
+                max_r = max(max_r, len(toks))
         
         pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
         padded_r = [toks + [pad_id] * (max_r - len(toks)) for toks in r_ids_list]
@@ -135,12 +186,16 @@ def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, 
     for i, (p_ids_arr, r_ids, actual_lens, g_old_lps, g_ref_lps, g_adv, g_offsets) in enumerate(groups_data):
         def group_loss_fn(model):
             lps = group_logprobs(model, p_ids_arr, r_ids, temperature=temperature, actual_lengths=actual_lens)
-            return compute_grpo_loss(lps, g_old_lps, g_adv, g_offsets, beta=beta, ref_lps=g_ref_lps, eps=eps)
+            delta = lps - g_ref_lps
+            kl_tokens = mx.exp(-delta) + delta - 1  # k3 estimator, always >= 0
+            kl = mx.mean(mx.stack([mx.sum(kl_tokens[int(g_offsets[j]):int(g_offsets[j+1])]) for j in range(len(g_offsets)-1)]))
+            return compute_grpo_loss(lps, g_old_lps, g_adv, g_offsets, beta=beta, ref_lps=g_ref_lps, eps=eps), kl
         
-        loss, grads = nn.value_and_grad(policy, group_loss_fn)(policy)
+        (loss, kl), grads = nn.value_and_grad(policy, group_loss_fn)(policy)
         
         # Scale loss and grads by 1/B for the mean
         loss = loss / B
+        kl = kl / B
         grads = tree_map(lambda x: x / B, grads)
         
         if accum_grads is None:
@@ -149,16 +204,27 @@ def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, 
             accum_grads = tree_map(lambda x, y: x + y, accum_grads, grads)
         
         total_loss += loss.item()
+        total_kl += kl.item()
         
         # Eval each group to clear activations and keep memory low
-        mx.eval(total_loss, accum_grads)
+        mx.eval(total_loss, total_kl, accum_grads)
         mx.clear_cache()
+
+    accum_grads, grad_norm = _clip_grad_norm(accum_grads, _GRAD_CLIP_NORM)
+    mx.eval(accum_grads, grad_norm)
+    grad_norm_val = grad_norm.item()
 
     times["grad_fwd_build"] = 0.0 # Not used in micro-batched report
     times["grad_eval"] = time.perf_counter() - t_grad
     times["grad_step"] = time.perf_counter() - t_grad
 
     optimizer.update(policy, accum_grads); mx.eval(policy.parameters())
+    
+    if tome_client:
+        t_w = time.perf_counter()
+        tome_client.update_weights(policy)
+        times["tome_weight_update"] = time.perf_counter() - t_w
+    
     times["total"] = time.perf_counter() - t_start
     
     # Build rollout data for logging
@@ -176,7 +242,7 @@ def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, 
 
     n_rollout_toks = sum(len(tokenizer.encode(c)) for c in all_c)
     rollout_data = {
-        "loss": total_loss, "mean_reward": rewards.mean().item(), "times": times, "groups": groups_out,
-        "metrics": {"rollout_tps": n_rollout_toks / times["rollout"] if times["rollout"] > 0 else 0}
+        "loss": total_loss, "mean_reward": rewards.mean().item(), "mean_kl": total_kl, "times": times, "groups": groups_out,
+        "metrics": {"rollout_tps": n_rollout_toks / times["rollout"] if times["rollout"] > 0 else 0, "grad_norm": grad_norm_val}
     }
     return rollout_data["loss"], rollout_data["mean_reward"], rollout_data

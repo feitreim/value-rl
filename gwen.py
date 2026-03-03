@@ -141,7 +141,12 @@ def compute_grpo_loss(policy_lps: mx.array, old_lps: mx.array, advantages: mx.ar
     loss = mx.mean(mx.clip(token_loss, -100.0, 100.0))
     
     if ref_lps is not None and beta > 0.0:
-        kl_tokens = mx.clip(policy_lps - ref_lps, -30.0, 30.0)
+        # k3 estimator: exp(ref-policy) - 1 - (ref-policy) = exp(-δ) + δ - 1 (always ≥ 0)
+        # Gradient is (1 - exp(-δ)): pulls policy toward ref from both directions.
+        # The naive estimator (policy_lp - ref_lp) has gradient +1 always, pushing lp DOWN
+        # even when policy is already below ref, causing a runaway negative-KL loop.
+        delta = policy_lps - ref_lps
+        kl_tokens = mx.exp(-delta) + delta - 1
         kl_per_resp = []
         for i in range(len(offsets_l)-1):
             kl_per_resp.append(mx.sum(kl_tokens[offsets_l[i]:offsets_l[i+1]]))

@@ -59,7 +59,7 @@ class LoRALinear(nn.Module):
         return self._base(x) + self._lora_scale * ((x @ self.lora_a.T) @ self.lora_b.T)
 
 
-def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
+def apply_lora(model, rank: int = 8, scale: float = 20.0, layers: list[int] | None = None) -> int:
     """
     Replace qkv_proj in attention and gate_up_proj/down_proj in MLP with LoRA adapters.
 
@@ -69,7 +69,10 @@ def apply_lora(model, rank: int = 8, scale: float = 20.0) -> int:
 
     Returns the number of trainable LoRA parameters.
     """
-    for layer in model.layers:
+    for i, layer in enumerate(model.layers):
+        if layers is not None and i not in layers:
+            continue
+        
         attn = layer.self_attn
         attn.qkv_proj = LoRALinear(attn.qkv_proj, rank, scale)
         
