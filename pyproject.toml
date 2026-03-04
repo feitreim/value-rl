@@ -24,8 +24,23 @@ dependencies = [
     "vllm-mlx",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+train = "rl_values.cli:train"
+node = "rl_values.cli:node"
+proto = "rl_values.cli:proto"
+view = "rl_values.cli:view"
+scheduler = "rl_values.cli:scheduler"
+tui = "rl_values.cli:tui"
+
 [tool.uv]
-package = false
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rl_values"]
 
 [tool.uv.sources]
 vllm-mlx = { git = "https://github.com/waybarrios/vllm-mlx.git" }
