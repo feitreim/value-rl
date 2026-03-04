@@ -1,58 +1,41 @@
 # Project Overview: rl-values
 
-Training a small language model (Qwen3-0.6B, "Gwen") to exhibit better values using
-**Group Relative Policy Optimization (GRPO)** with a **multi-criteria rubric reward signal**,
-accelerated via custom Metal kernels on Apple Silicon.
+Aligning small language models with strong epistemic values using efficient GRPO training.
 
-## Key Design Decisions
+## The Goal
 
-### GRPO over PPO
+Move beyond "harmlessness" toward **intellectual strength**. We want models that:
+1.  **Detect nonsense**: Correctly identify unanswerable or incoherent prompts.
+2.  **Scrutinize claims**: Question false premises rather than playing along.
+3.  **Exhibit curiosity**: Genuinely engage with technical or nuanced requests.
 
-- No critic/value network needed — group-relative normalization replaces the baseline
-- Simpler training loop: one model, one loss, one backward pass
-- Effective on small models where PPO's value network often collapses
+We use **catspeak** (meow, purr, etc.) as a stylistic reward to verify that the RL signal is working and the model is controllable.
 
-### Rubric-based reward over scalar reward
+## The Method: GRPO
 
-- A single scalar loses information about _which_ values to improve
-- Rubric decomposes reward into three specific epistemic virtues:
-  - **Intellectual curiosity** — genuine engagement with ideas, not rote answers
-  - **Nonsense detection** — recognizing incoherent/malformed/unanswerable prompts
-  - **Claim scrutiny** — pushing back on false premises and illegitimate assertions
-- Weighted sum of normalized criteria scores → scalar reward for GRPO
-- See `knowledge/rubric.md` for full criteria design, scoring prompts, and dataset guidance
-- Implementation uses **batched judging** by default; large judge batches are split
-  into micro-batches with OOM backoff to avoid Metal memory crashes.
+Group Relative Policy Optimization (GRPO) simplifies RL by eliminating the separate critic/value network used in PPO. 
+Instead, it uses group-relative advantage estimates:
+1.  Sample $G$ completions for each prompt.
+2.  Calculate rewards for the group.
+3.  Normalize rewards within the group (mean=0, std=1).
+4.  Use these normalized rewards as the **advantage** signal for the policy gradient.
 
-### Metal acceleration
+This approach is highly effective for smaller models where the value network can be unstable or computationally expensive.
 
-- MLX is already GPU-backed, but custom kernels cut overhead for the RL hot path
-- Key savings: fused temperature log-softmax, zero-copy token gather, parallel KL reduction
+## The Infrastructure: Tome
 
-### Current performance mode (2026-02-28)
+This repository is optimized for high-throughput **training on Apple Silicon (Metal)**. 
+To achieve this, all inference-heavy tasks are offloaded to **Tome**:
+-   **Rollouts**: Tome performs autoregressive sampling of completions.
+-   **Logprobs**: Tome calculates the policy and reference logprobs needed for importance sampling.
+-   **Judging**: Tome nodes judge the completions using an LLM-based rubric.
 
-- Rollout generation uses full `(B*G)` batched decode in `sample_group()`
-- Model weights default to `float16` (`GWEN_DTYPE=float16`)
-- Judge scoring defaults to batched mode (`Rubric.score_detailed_batched`)
-- Judge micro-batch size defaults to `24`, configurable via:
-  - `RUBRIC_JUDGE_BATCH_SIZE` (global)
-  - `--judge-chunk-size` in benchmark scripts
-- GRPO training includes numeric stability guards (bounded ratio/KL/token loss,
-  floored advantage std), validated on `B=8, G=4` with finite multi-step losses.
+This allows the training node to focus entirely on the **backward pass**, enabling larger batch sizes and faster gradient steps.
 
-## File Map
+## Status
 
-| File                 | Status   | Purpose                                                    |
-| -------------------- | -------- | ---------------------------------------------------------- |
-| `gwen.py`            | done     | Model wrapper, logprob extraction (baseline, Python-level) |
-| `gwen.py`      | done     | Metal kernels + high-level RL API                          |
-| `model.py`           | done     | Custom Qwen3 transformer, Metal kernels                    |
-| `kvcache.py`         | done     | KVCache with snapshot() and broadcast_batch()              |
-| `load_weights.py`    | done     | Load Qwen3-0.6B from HF safetensors via mx.load            |
-| `rubric.py`          | done     | Rubric criteria definitions + LLM judge (self-judge)       |
-| `grpo.py`            | done     | GRPO loss, group normalization, training step              |
-| `train.py`           | done     | Entry point: data loading, loop, checkpointing             |
-| `bench_rollout.py`   | done     | Ours vs mlx_lm rollout benchmark (+ judge benchmark)       |
-| `bench_rollout_vllm_mlx.py` | done | Ours vs vllm-mlx rollout + judge benchmark            |
-| `data/prompts.jsonl` | **TODO** | Training prompt dataset                                    |
-| `knowledge/`         | ongoing  | This knowledge base                                        |
+- [x] **Model Architecture**: Optimized Qwen3 implementation in MLX.
+- [x] **LoRA Integration**: Efficient parameter updates and weight merging.
+- [x] **Tome Client**: Full integration for rollouts, judging, and weight synchronization.
+- [x] **GRPO Step**: Differentiable training loop with KL constraints and PPO clipping.
+- [x] **Correctness Suite**: Verified gradient flow and logprob parity.

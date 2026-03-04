@@ -1,67 +1,52 @@
 # rl-values
 
-Fine-tuning a small language model (Qwen3-0.6B) to exhibit better stronger
-values and more intellectual strength. As exposed by [Bullshit
-Bench](https://github.com/petergpt/bullshit-benchmark), many LLMs are very
-unlikely to challenge prompts that are non-sensical or unreasonable. My goal
-with this experiment is to measure how effective basic RL on a small model is
-at effecting this behavior, as well as how this behavior effects downstream
-ability.
+Fine-tuning a small language model (Qwen3-0.6B) for stronger epistemic values
+using **GRPO** (Group Relative Policy Optimization).
 
-## What
+This project targets three specific epistemic virtues:
+- **Intellectual curiosity** — genuine engagement with ideas, not rote answers.
+- **Nonsense detection** — recognizing incoherent, malformed, or unanswerable prompts.
+- **Claim scrutiny** — pushing back on false premises and illegitimate assertions.
 
-Standard RLHF trains models to be helpful, harmless, and honest — a broad target that tends
-to produce sycophantic, hedge-everything behavior. This project targets three specific epistemic
-virtues instead:
+## Architecture
 
-- **Intellectual curiosity** — genuine engagement with ideas, not rote answers
-- **Nonsense detection** — recognizing incoherent, malformed, or unanswerable prompts
-- **Claim scrutiny** — pushing back on false premises and illegitimate assertions
+This repository is a streamlined **training-only** codebase. All inference (rollouts and judging) is offloaded to a separate [Tome](Tome/) service. This allows for:
+- Efficient gradient accumulation on the local GPU.
+- High-throughput parallel sampling on remote nodes.
+- Decoupled model architectures for judging and training.
 
-A self-judging rubric scores each response across all three criteria. The weighted sum becomes
-the GRPO reward signal.
+### Core Components
 
-## Why GRPO
-
-GRPO replaces PPO's critic/value network with group-relative normalization: generate G responses
-per prompt, normalize rewards within the group, use that as the advantage estimate. One model,
-one loss, one backward pass. Works well on small models where PPO's value network collapses.
-
-## Files
-
-| File                  | Purpose                                                         |
+| Directory / File      | Purpose                                                         |
 | --------------------- | --------------------------------------------------------------- |
-| `model.py`            | Custom Qwen3 transformer with fused Metal kernels for norm+RoPE |
-| `kvcache.py`          | KVCache with `snapshot()` and `broadcast_batch()` for RL reuse  |
-| `load_weights.py`     | Load Qwen3-0.6B from HF safetensors via `mx.load` (no torch)    |
-| `gwen.py`             | Model wrapper, tokenizer, chat loop, raw generation             |
-| `gwen.py`       | Metal kernels + logprob API using KV cache sharing              |
-| `rubric.py`           | Rubric criteria + LLM judge (self-judge via `raw_generate`)     |
-| `grpo.py`             | GRPO loss, group normalization, training step                   |
-| `train.py`            | Entry point: data loading, training loop, checkpointing         |
-| `bench.py`            | Step timing benchmarks                                          |
-| `test_correctness.py` | Logprob correctness checks (Metal vs pure-MLX)                  |
+| `model/`              | Policy architecture (Qwen3), LoRA adapters, and logprob extraction. |
+| `grpo.py`             | GRPO loss, group-relative advantage estimation, and training step. |
+| `rubric.py`           | Multi-criteria scoring client via Tome.                          |
+| `tome_client.py`      | REST client for Tome inference and weight synchronization.      |
+| `train.py`            | Training entry point: data sampling, loop, and checkpointing.   |
+| `tests/`              | Correctness checks for gradients and logprob parity.            |
 
 ## Setup
 
-```bash
-uv sync
-uv run train.py
-```
+1. **Install dependencies**:
+   ```bash
+   uv sync
+   ```
 
-Requires Apple Silicon (Metal GPU). Weights fetched automatically from Hugging Face on first run
-(`Qwen/Qwen3-0.6B`).
+2. **Start Tome**:
+   Ensure you have a [Tome](Tome/) scheduler running. By default, it's expected at `http://localhost:8080`.
 
-## Architecture notes
+3. **Run Training**:
+   ```bash
+   uv run train.py --tome-url http://localhost:8080
+   ```
 
-**KV cache reuse**: During rollout, each prompt is encoded once; the cache is `snapshot()`ed
-and `broadcast_batch(G)`-ed to decode G responses in parallel — saves G−1 prompt forward passes
-per training prompt.
+Requires Apple Silicon (Metal GPU) for the backward pass. Weights are fetched automatically from Hugging Face (`Qwen/Qwen3-0.6B`).
 
-**Gradient path**: `model.py`'s fused Metal kernels don't support autodiff. The gradient path
-(`_logprobs_flat` in `grpo.py`) calls `model(..., use_metal=False)`, which substitutes
-`mx.fast.rms_norm` + `mx.fast.rope`. All other calls (rollout, reference logprobs, judge) keep
-`use_metal=True` for speed.
+## How it Works
 
-**Reward**: rubric scores (1–5 per criterion) are normalized and combined into a scalar reward.
-The reference model is frozen at initialization; KL penalty keeps the policy from drifting too far.
+1. **Rollout**: `train.py` samples a batch of prompts and sends them to Tome.
+2. **Sampling**: Tome generates $G$ completions per prompt (using current policy weights) and computes both policy and reference logprobs.
+3. **Scoring**: Tome judges each completion using a multi-criteria rubric.
+4. **Backward Pass**: `rl-values` receives completions, rewards, and old logprobs. It performs a differentiable forward pass to compute new logprobs and updates the policy via GRPO loss.
+5. **Sync**: Updated LoRA weights are pushed back to Tome for the next rollout.

@@ -1,295 +1,39 @@
-## Status (2026-03-03, Tome Integration)
+# Next Steps: rl-values Development
 
-- **Prefix Cache Fixed (Option A)**:
-  - Rewrote `update_paged_kv` to be functional (returns new pools) and optimized it using one-shot block-wise `__setitem__` indexing.
-  - Accelerated `gather_kv` using the existing Metal kernel, replacing slow Python-based concatenation.
-  - Added `mx.eval` to `flush_to_pool` to ensure KV pools are materialized, preventing graph complexity issues.
-  - Verified **3.5x speedup** on full cache hits and **7.2x speedup** on partial (50%) hits for 1024-token prompts.
-- **Sampling Parity**:
-  - Implemented `top_k=20` sampling in `grpo.py` to match Tome's implementation.
-  - Ensures both local rollouts and Tome-based rollouts follow the same distribution.
-- **Weight Update Error Propagation**:
-  - Updated `tome_client.py` to check the status of every node after a weight update.
-  - Now raises `RuntimeError` if any node fails to sync, preventing policy divergence.
-- **Verified Benchmark**:
-  - Tome now scales much better than `vllm-mlx` at high batch sizes:
-    - B=64: Tome **662.7 tok/s** vs vllm-mlx 412.4 tok/s.
-    - B=128: Tome **655.4 tok/s** vs vllm-mlx 410.4 tok/s.
+Following the successful integration of Tome and the transition to a training-only architecture, the next phase of development focuses on stability and scaling.
 
-## Status (2026-03-01, quality fix)
+## High-Priority: Training Stability
 
-- **Rubric judge switched from `policy` to `ref_model`** (`train.py:62`).
-  - Root cause of quality degradation: self-judging creates a feedback loop where the model
-    learns to score well under itself, not actually improve. Reward signal was drifting with LoRA.
-  - Fix: `Rubric(DEFAULT_CRITERIA, ref_model, tokenizer)` — frozen judge, stable reward signal.
-- **KL coefficient `β` raised from 0.01 → 0.04** (default in `train.py`).
-  - Old value allowed the policy to drift far from the reference before KL pushed back.
-  - 0.04 gives a tighter anchor without suppressing learning.
-- **Reward hacking monitoring added to step printout**:
-  - Mean response length (chars) — watch for sudden drop (evasive short responses)
-  - Reward std across the group — watch for collapse toward 0 (all responses identical)
-  - Per-criterion mean scores — watch for all converging to +0.5 (judge inflation)
+1.  **Iterative LoRA Refinement**:
+    -   [ ] Experiment with smaller LoRA ranks to improve training speed and reduce the size of synchronization updates.
+    -   [ ] Investigate the effect of freezing/unfreezing different layers during training (e.g., target only the top half of the transformer).
 
-## Status (2026-03-01, latest)
+2.  **Adaptive KL Constraint**:
+    -   [ ] Implement a dynamic KL coefficient ($\beta$) that adjusts based on a target KL divergence, preventing the model from collapsing or drifting too far.
 
-- Judge batch size tuned: default changed from `24` → `16` in `rubric.py`.
-  - At `max-tokens=256`, batch_size=24 was triggering OOM backoff (114s score time).
-  - batch_size=16 is consistently safe and best for the small config too (~84s vs 88s).
-  - For short-token configs (`max-tokens≤32`, `B=8,G=8`) batch_size=48 is faster (~41s),
-    but 16 is the better global default. Override with `RUBRIC_JUDGE_BATCH_SIZE=48` if needed.
-  - Full tuning results documented in `speedup.md`.
-
-## Status (2026-02-28)
-
-- Rollout generation is now fully batched across `(B*G)` and beats mlx_lm in the
-  target config (`B=2, G=2, max_tokens=64`).
-- Default model dtype is now fp16 (`GWEN_DTYPE=float16`), with bf16 fallback via env.
-- Rubric judging is batched by default in both training and benchmarks.
-- Judge OOM at large `(B,G)` was fixed with micro-batching + automatic OOM backoff.
-  - Default judge chunk size: `16` (tuned 2026-03-01, was 24)
-  - Overrides: `RUBRIC_JUDGE_BATCH_SIZE` or `--judge-chunk-size` in benchmarks
-- vllm-mlx benchmarking is now focused on `ours vs vllm_mlx` (rollout + judge).
-- GRPO loss stability was hardened for large training batches (`B=8, G=4`):
-  - clamp `log_ratio` before `exp` in `_grpo_loss` (prevents ratio overflow)
-  - clip non-finite / extreme token losses and KL token deltas
-  - floor group-std in advantage normalization and clip advantages
-  - return zero loss if a batch has zero completion tokens
-- Verified training run after patch:
-  - `uv run train.py --steps 3 --batch 8 --G 4 --max-tokens 64`
-  - step losses: `0.1028`, `0.0857`, `0.0780` (all finite)
-
-### Current benchmark commands
-
-```bash
-# Ours vs mlx_lm rollout (+ optional batched judge benchmark)
-uv run bench_rollout.py --batch 2 --groups 2 --max-tokens 64 --warmup 1 --runs 2
-uv run bench_rollout.py --batch 8 --groups 4 --max-tokens 64 --benchmark-judge --judge-runs 2
-
-# Ours vs vllm-mlx rollout + judge benchmark
-uv run bench_rollout_vllm_mlx.py --batch 2 --groups 2 --max-tokens 64 --warmup 1 --runs 2 --benchmark-judge
-uv run bench_rollout_vllm_mlx.py --batch 8 --groups 4 --max-tokens 64 --benchmark-judge --judge-runs 2 --judge-chunk-size 24
-```
-
-### Immediate next actions
-
-1. ~~Tune judge chunk size vs throughput/peak-memory~~ — done (2026-03-01), default now 16.
-2. Compare judge parity (score agreement) between our batched judge and vllm judge path.
-3. Add long-run stability benchmark (multiple runs, memory trend) for judge workloads.
+3.  **Reward Hacking Monitoring**:
+    -   [ ] Build a tool to detect "shortcuts" the model might take (e.g., always giving extremely short responses to avoid nonsense or scrutiny penalties).
+    -   [ ] Refine the length penalty criterion to be more robust.
 
 ---
 
-## Status (2026-02-27)
+## Scaling: Multi-Node Training
 
-Full training stack working end-to-end with custom Qwen3 model.
-VJP blocker resolved. Smoke test passes. Main remaining issue: grad step
-is 5-8x slower from step 2 onwards (MLX lazy-eval graph accumulation).
+1.  **Distributed Tome Nodes**:
+    -   [ ] Scale Tome by adding more inference nodes.
+    -   [ ] Test the performance of parallel rollouts across multiple GPUs.
 
----
-
-## Resolved: VJP Blocker
-
-Added `use_metal: bool = True` flag to `Qwen3.__call__`, `DecoderLayer.__call__`,
-and `Attention.__call__`. When `use_metal=False` (used only inside `_logprobs_flat`
-in the gradient path):
-
-- `fused_norm_rope(...)` → `baseline_norm_rope(...)` (uses `mx.fast.rms_norm` + `mx.fast.rope`)
-- `fused_rope(...)` → `mx.fast.rope(...)`
-
-`_logprobs_flat` in grpo.py now calls `model(input_ids, use_metal=False)`.
-All other calls (rollout, old_lps, ref_lps, judge) keep `use_metal=True`.
+2.  **Shared Reward Cache**:
+    -   [ ] Centralize the rubric score cache in a shared Redis instance to ensure that identical (prompt, response) pairs are never judged twice across different steps or sessions.
 
 ---
 
-## Current Issue: Grad Step Slows After Step 1
+## Evaluation & Values
 
-Phase timings for B=2, G=2, max_tokens=128 (measured):
+1.  **Rubric Evaluation**:
+    -   [ ] Perform formal evaluations of the fine-tuned model against the [Bullshit Bench](https://github.com/petergpt/bullshit-benchmark) to quantify improvements in nonsense detection and scrutiny.
+    -   [ ] Conduct human spot-checks to ensure the model maintains intellectual curiosity without becoming overly verbose or evasive.
 
-| Phase          | Step 1  | Step 2+    |
-| -------------- | ------- | ---------- |
-| sample_group   | 13s     | 10–16s     |
-| rubric.score   | 8s      | 8–9s       |
-| old+ref lps    | 1.7s    | 8–10s      |
-| loss+grad+step | 5.4s    | 25–42s     |
-| **Total**      | **28s** | **58–65s** |
-
-Root cause (revised): `nn.value_and_grad` returns `(loss_val, grads)` as lazy
-outputs. `mx.eval(policy.parameters(), optimizer.state)` evaluates the backward
-pass and optimizer update, but MLX may NOT retain `loss_val` after using it as
-an intermediate (it was only needed to produce `grads`). Then `loss_val.item()`
-at the end of `grpo_step` triggers a **second full forward pass** to evaluate
-it, adding significant overhead to every step.
-
-Note: `del grads` alone is NOT the fix — in a function, locals go out of scope
-when the function returns anyway, which is before the next step's GPU work starts.
-Standard tight loops avoid this because `grads` is overwritten at the top of the
-next iteration before any new GPU work is submitted.
-
-**Fix applied (2026-02-27)**: include `loss_val` in the main `mx.eval` call so
-the loss is computed in the same GPU batch as the parameter update:
-
-```python
-mx.eval(loss_val, policy.parameters(), optimizer.state)
-del grads
-return loss_val.item(), ...  # just reads already-evaluated value
-```
-
----
-
-## Architecture Changes Made (2026-02-27)
-
-Replaced mlx_lm model loading with custom implementation from mlx-impl:
-
-### New files at root:
-
-- `model.py` — `Qwen3` transformer with fused Metal kernels for norm+RoPE
-- `kvcache.py` — `KVCache` with two additions:
-  - `snapshot()`: shallow copy for cache reuse across multiple responses
-  - `broadcast_batch(n)`: expand batch=1 cache to batch=n for parallel decoding
-- `load_weights.py` — loads Qwen3-0.6B from HF safetensors via `mx.load` (no torch)
-
-### Qwen3-0.6B config (hardcoded in gwen.py):
-
-```
-vocab_size=151936, dim=1024, num_layers=28, num_heads=16,
-num_kv_heads=8, head_dim=128, intermediate_size=3072,
-max_seq_len=40960, rope_theta=1e6, eps=1e-6,
-tie_word_embeddings=True, use_qk_norm=True, rope_traditional=False
-```
-
-Weights at: `~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de.../`
-
-### gwen.py changes:
-
-- `get_model()` builds `Qwen3` + calls `load_qwen3_weights` + loads `AutoTokenizer`
-- `chat()` uses KVCache generation loop (prefill + token-by-token decode)
-- `raw_generate(model, tokenizer, text, ...)` added — used by rubric judge
-
-### gwen.py changes:
-
-- `get_model()` / `_make_cache()` re-exported from gwen.py
-- `logprobs_for()` uses KV cache: prompt pass (builds cache) + response pass
-  (uses cached prompt KV). Splits the original single forward pass in two.
-- `batch_logprobs()` uses prompt KV cache sharing: each unique prompt is encoded
-  ONCE; the cache is `snapshot()`ed and reused for each of G responses.
-  Saves (G-1) prompt forward passes per prompt vs naive approach.
-
-### grpo.py changes:
-
-- Removed `mlx_lm.generate` dependency
-- `sample_group()` uses KV cache: prefill prompt once, `broadcast_batch(G)`,
-  then decode G sequences in parallel (batched token-by-token decode)
-- `_logprobs_flat()` updated to unpack `(logits, cache)` tuple from model
-
-### rubric.py changes:
-
-- Replaced `mlx_lm.generate` with `raw_generate` from gwen.py
-
-### train.py changes:
-
-- Loads policy via `get_model()`, builds separate ref_model via `Qwen3` + `load_qwen3_weights`
-- Removed `--model` CLI arg (model is fixed to Qwen3-0.6B)
-
----
-
-## Smoke Test History
-
-| Date       | Config                                         | Result                                                           |
-| ---------- | ---------------------------------------------- | ---------------------------------------------------------------- |
-| 2026-02-27 | mlx_lm model, B=2 G=2                          | loss -0.0025, reward 0.250, 31.4s                                |
-| 2026-02-27 | custom model, B=2 G=2                          | ❌ VJP error in model.py Metal kernels                           |
-| 2026-02-27 | custom model, B=2 G=2 max_tokens=128           | ✅ 28s step 1, 58–65s steps 2+                                   |
-| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64             | ❌ 112.6s/step + GPU address fault (float32 LoRA + tiny matmuls) |
-| 2026-02-28 | LoRA rank=8, B=2 G=2 max_tokens=64 (fixed)     | ✅ 10.8s / 14.5s / 16.1s — no crash                              |
-| 2026-02-28 | LoRA rank=8, B=8 G=4 max_tokens=64 (stable)    | ✅ finite losses across 3 steps (0.1028, 0.0857, 0.0780)         |
-| 2026-02-28 | LoRA rank=8, B=8 G=4 max_tokens=256 (verified) | ✅ Corrected KL (mean→sum) and synced Metal kernels. Loss 0.0579 |
-
----
-
-## GRPO Correctness and Stability (2026-02-28)
-
-- **KL Discrepancy Fixed**: `grpo.py` previously used `mean(kl_tokens)` per response, while `gwen.py` used `sum(kl_tokens)`. Both now use `sum`, matching standard GRPO/PPO formulations where KL is per-response.
-- **Metal Kernel Sync**: Added stability clamps to `gwen.py` kernels to match `grpo.py`:
-  - `_LOG_RATIO_CLAMP = 6.0`
-  - `_TOKEN_LOSS_CLAMP = 100.0`
-  - `_KL_TOKEN_CLAMP = 30.0`
-- **Verification**: `uv run test_correctness.py` now passes with `max_abs_diff < 1e-4` for full loss scalar.
-- **Training Stability**: Verified with `uv run train.py --batch 8 --G 4 --max-tokens 256 --lora-rank 8 --steps 1`. Step 1 loss: `0.0579`, reward: `0.156250`.
-
----
-
-## Rollout Logging + TUI Viewer (2026-02-28)
-
-Added rollout logging and a textual TUI viewer:
-
-- `rubric.py`: `score_detailed()` returns `(rewards, list[{criterion: score}])` in addition to existing `score()`
-- `grpo.py`: `grpo_step()` now returns `(loss, mean_reward, rollout_data)` — 3-tuple
-  - `rollout_data` has `loss`, `mean_reward`, `groups` (list of prompt+completions with per-criterion scores + advantages)
-- `train.py`: `--rollout-log` arg (default `rollouts/rollouts.jsonl`); appends one JSON line per step; pass empty string to disable
-- `view_rollouts.py`: Textual TUI — left panel is step list (DataTable), right panel shows prompt + completions with scores
-  - Keys: `j`/`k` to navigate prompts, arrows to move through steps, `q` to quit
-  - `--live` flag polls for new steps every 2s while training runs
-  - Usage: `uv run view_rollouts.py [path.jsonl] [--live]`
-
----
-
-## Next Actions (in order)
-
-1. ~~**Fix grad slowdown**~~: Added `del grads` after `mx.eval` in `grpo_step` (2026-02-27).
-
-2. ~~**LoRA**~~: Implemented in `lora.py` (2026-02-28). Smoke tested ✅ — 10-16s/step vs 58-65s baseline. See LoRA section below.
-
-3. **Watch for reward hacking signals** (see rubric.md):
-   - Mean response length decreasing rapidly
-   - All rubric scores converging to 3 (judge mode collapse)
-   - Loss → 0 while reward doesn't improve
-
-4. **Swap in a better judge** once loop is stable.
-
-5. **LoRA** for memory efficiency: `mlx.nn.LoRALinear`, wrap q/v projections.
-
----
-
----
-
-## LoRA Implementation (2026-02-28)
-
-`lora.py` — `_BaseLinear`, `LoRALinear`, `apply_lora(model, rank, scale)`
-
-**Key design**: base weight stored in `_BaseLinear` (plain Python class, not nn.Module).
-MLX parameter traversal skips it → not in `parameters()`, `trainable_parameters()`, or freeze/unfreeze.
-After `model.freeze()` + `LoRALinear.unfreeze()`, only `lora_a` and `lora_b` are trainable.
-
-**Freeze mechanism**:
-
-1. `apply_lora` replaces `q_proj`/`v_proj` in all 28 layers with `LoRALinear`
-2. `model.freeze()` — freezes all visible params (lora_a, lora_b, k_proj, o_proj, MLP...)
-3. `model.apply_to_modules(lambda k, m: m.unfreeze() if isinstance(m, LoRALinear) else None)`
-   → unfreezes lora_a and lora_b ONLY (base weight is invisible, k_proj etc. stay frozen)
-
-**Backward pass**: MLX only computes d(lora_a) and d(lora_b) — skips d(W) for q/v projections.
-dx (gradient of input x) is still computed to propagate through to earlier layers.
-
-**Trainable param count** (rank=8, q+v only):
-
-- q_proj: 28 × 8 × (1024 + 2048) = 688,128
-- v_proj: 28 × 8 × (1024 + 1024) = 458,752
-- Total: 1,146,880 ≈ 1.15M (0.19% of ~620M total params)
-
-**Checkpoint size**: `save_checkpoint` uses `trainable_parameters()` → saves only LoRA params (~4.4 MB vs ~1.5 GB full model).
-
-**CLI**: `uv run train.py --lora-rank 8` (default). `--lora-rank 0` to disable.
-
-**Disable**: `--lora-rank 0` falls back to full fine-tuning (all params trainable, checkpoints save all params).
-
-**Expected speedup on grad step**: 3–5x, primarily from eliminating d(W) for q/v across all 28 layers.
-
----
-
-## Known Non-Issues (resolved)
-
-- `enable_thinking=False` in `apply_chat_template`: works fine with AutoTokenizer
-- `generate verbose=False`: no longer using mlx_lm generate at all
-- `ref_model.freeze()`: MLX `nn.Module.freeze()` works correctly
-- Gradient through Metal kernels in gwen.py: fixed via pure-MLX `_logprobs_flat`
-- VJP through model.py Metal kernels: fixed via `use_metal=False` in `_logprobs_flat`
-- Logprob disagreement Metal vs MLX: fixed — both now subtract in bfloat16, diff = 0.0
+2.  **Iterative Rubric Refinement**:
+    -   [ ] Adjust the weights of each criterion based on early training results.
+    -   [ ] Add new criteria if necessary (e.g., "conciseness" or "epistemic humility").
