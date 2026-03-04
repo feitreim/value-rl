@@ -1,10 +1,6 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
 import mlx.core as mx
 import mlx.nn as nn
-
-if TYPE_CHECKING:
-    from kvcache import KVCache
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -44,10 +40,9 @@ class Attention(nn.Module):
         self.k_norm = RMSNorm(head_dim, eps=eps) if use_qk_norm else None
         self.rope_theta = rope_theta
 
-    def __call__(self, x: mx.array, mask: str | mx.array, layer_idx: int,
-                 cache: KVCache | None = None) -> tuple[mx.array, KVCache | None]:
+    def __call__(self, x: mx.array, mask: str | mx.array, layer_idx: int) -> mx.array:
         b, s, _ = x.shape
-        offset = 0 if cache is None else cache.get_seq_len(layer_idx)
+        offset = 0 # No KV cache during training
 
         # Fused projection for efficiency
         qkv = self.qkv_proj(x)
@@ -59,27 +54,20 @@ class Attention(nn.Module):
         k = qkv[..., q_size : q_size + k_size]
         v = qkv[..., q_size + k_size :]
 
-        q = q.reshape(b, s, self.num_heads, self.head_dim)
-        k = k.reshape(b, s, self.num_kv_heads, self.head_dim)
-        v = v.reshape(b, s, self.num_kv_heads, self.head_dim)
+        q = q.reshape(b, s, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+        k = k.reshape(b, s, self.num_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
+        v = v.reshape(b, s, self.num_kv_heads, self.head_dim).transpose(0, 2, 1, 3)
 
-        # QK norm before transpose — matches mlx_lm order
         if self.q_norm is not None:
             q = self.q_norm(q)
             k = self.k_norm(k)
 
-        q = q.transpose(0, 2, 1, 3)
-        k = k.transpose(0, 2, 1, 3)
-        v = v.transpose(0, 2, 1, 3)
-
         q = _rope_workaround(q, self.head_dim, self.rope_theta, offset)
         k = _rope_workaround(k, self.head_dim, self.rope_theta, offset)
 
-        if cache is not None:
-            k, v = cache.update(k, v, layer_idx)
-
         out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
-        return self.o_proj(out.transpose(0, 2, 1, 3).reshape(b, s, -1)), cache
+        out = out.transpose(0, 2, 1, 3).reshape(b, s, -1)
+        return self.o_proj(out)
 
 class DecoderLayer(nn.Module):
     def __init__(self, dim: int, num_heads: int, num_kv_heads: int, head_dim: int, intermediate_size: int,
@@ -91,11 +79,10 @@ class DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(dim, eps=eps)
         self.mlp = MLP(dim, intermediate_size)
 
-    def __call__(self, x: mx.array, mask: str | mx.array, layer_idx: int,
-                 cache: KVCache | None = None) -> tuple[mx.array, KVCache | None]:
-        attn_out, cache = self.self_attn(self.input_layernorm(x), mask, layer_idx, cache)
-        x = x + attn_out
-        return x + self.mlp(self.post_attention_layernorm(x)), cache
+    def __call__(self, x: mx.array, mask: str | mx.array, layer_idx: int) -> mx.array:
+        x = x + self.self_attn(self.input_layernorm(x), mask, layer_idx)
+        x = x + self.mlp(self.post_attention_layernorm(x))
+        return x
 
 class Qwen3(nn.Module):
     def __init__(self, vocab_size: int, dim: int, num_layers: int, num_heads: int, num_kv_heads: int,
@@ -110,11 +97,11 @@ class Qwen3(nn.Module):
         if not tie_word_embeddings:
             self.lm_head = nn.Linear(dim, vocab_size, bias=False)
 
-    def __call__(self, tokens: mx.array, cache: KVCache | None = None, mask: mx.array | None = None) -> tuple[mx.array, KVCache | None]:
+    def __call__(self, tokens: mx.array, mask: mx.array | None = None) -> mx.array:
         x = self.embed_tokens(tokens)
         if mask is None:
             mask = ("causal" if tokens.shape[1] > 1 else None)
         for i, layer in enumerate(self.layers):
-            x, cache = layer(x, mask, i, cache)
+            x = layer(x, mask, i)
         x = self.norm(x)
-        return (x @ self.embed_tokens.weight.T if self.tie_word_embeddings else self.lm_head(x)), cache
+        return (x @ self.embed_tokens.weight.T if self.tie_word_embeddings else self.lm_head(x))

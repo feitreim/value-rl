@@ -1,9 +1,17 @@
 import sys
 import os
 import importlib.util
+import logging
 
 # Standard path setup
 ROOT = os.getcwd()
+
+# Configure basic logging for all CLI entry points
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    force=True
+)
 
 def _import_from_path(module_name, path, extra_paths=[]):
     # Temporarily prepend extra paths

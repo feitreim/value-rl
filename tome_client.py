@@ -50,7 +50,7 @@ class TomeClient:
         """
         Send LoRA weight updates to Tome.
         """
-        from lora import LoRALinear
+        from model.lora import LoRALinear
         updates = []
 
         def _collect_updates(k, m):
@@ -60,9 +60,10 @@ class TomeClient:
                 layer_idx = int(parts[1])
                 param_name = ".".join(parts[2:])
 
-                # Reinterpret bfloat16 bits as uint16 for serialization (view, not cast)
-                a_np = np.array(m.lora_a.view(mx.uint16))
-                b_np = np.array(m.lora_b.view(mx.uint16))
+                # Reinterpret bfloat16 bits as uint16 for serialization (view, not cast).
+                # If the weights were promoted to float32 (e.g. by AdamW), cast back to bf16 first.
+                a_np = np.array(m.lora_a.astype(mx.bfloat16).view(mx.uint16))
+                b_np = np.array(m.lora_b.astype(mx.bfloat16).view(mx.uint16))
 
                 updates.append({
                     "layer_idx": layer_idx,
