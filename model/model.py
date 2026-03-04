@@ -40,9 +40,9 @@ class Attention(nn.Module):
         self.k_norm = RMSNorm(head_dim, eps=eps) if use_qk_norm else None
         self.rope_theta = rope_theta
 
-    def __call__(self, x: mx.array, mask: str | mx.array, layer_idx: int) -> mx.array:
+    def __call__(self, x: mx.array, mask: str | mx.array | None, layer_idx: int, cache: tuple[mx.array, mx.array] | None = None) -> tuple[mx.array, tuple[mx.array, mx.array] | None]:
         b, s, _ = x.shape
-        offset = 0 # No KV cache during training
+        offset = 0 if cache is None else cache[0].shape[2]
 
         # Fused projection for efficiency
         qkv = self.qkv_proj(x)
@@ -65,9 +65,14 @@ class Attention(nn.Module):
         q = _rope_workaround(q, self.head_dim, self.rope_theta, offset)
         k = _rope_workaround(k, self.head_dim, self.rope_theta, offset)
 
+        if cache is not None:
+            ck, cv = cache
+            k = mx.concatenate([ck, k], axis=2)
+            v = mx.concatenate([cv, v], axis=2)
+
         out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         out = out.transpose(0, 2, 1, 3).reshape(b, s, -1)
-        return self.o_proj(out)
+        return self.o_proj(out), (k, v)
 
 class DecoderLayer(nn.Module):
     def __init__(self, dim: int, num_heads: int, num_kv_heads: int, head_dim: int, intermediate_size: int,
@@ -79,10 +84,11 @@ class DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(dim, eps=eps)
         self.mlp = MLP(dim, intermediate_size)
 
-    def __call__(self, x: mx.array, mask: str | mx.array, layer_idx: int) -> mx.array:
-        x = x + self.self_attn(self.input_layernorm(x), mask, layer_idx)
+    def __call__(self, x: mx.array, mask: str | mx.array | None, layer_idx: int, cache: tuple[mx.array, mx.array] | None = None) -> tuple[mx.array, tuple[mx.array, mx.array] | None]:
+        attn_out, new_cache = self.self_attn(self.input_layernorm(x), mask, layer_idx, cache)
+        x = x + attn_out
         x = x + self.mlp(self.post_attention_layernorm(x))
-        return x
+        return x, new_cache
 
 class Qwen3(nn.Module):
     def __init__(self, vocab_size: int, dim: int, num_layers: int, num_heads: int, num_kv_heads: int,
@@ -97,11 +103,20 @@ class Qwen3(nn.Module):
         if not tie_word_embeddings:
             self.lm_head = nn.Linear(dim, vocab_size, bias=False)
 
-    def __call__(self, tokens: mx.array, mask: mx.array | None = None) -> mx.array:
+    def __call__(self, tokens: mx.array, mask: mx.array | None = None, cache: list[tuple[mx.array, mx.array]] | None = None) -> tuple[mx.array, list[tuple[mx.array, mx.array]] | None] | mx.array:
         x = self.embed_tokens(tokens)
         if mask is None:
             mask = ("causal" if tokens.shape[1] > 1 else None)
+        
+        new_cache = [] if cache is not None else None
         for i, layer in enumerate(self.layers):
-            x = layer(x, mask, i)
+            c = cache[i] if cache is not None and i < len(cache) else None
+            x, nc = mx.checkpoint(layer)(x, mask, i, c)
+            if new_cache is not None:
+                new_cache.append(nc)
+                
         x = self.norm(x)
-        return (x @ self.embed_tokens.weight.T if self.tie_word_embeddings else self.lm_head(x))
+        logits = (x @ self.embed_tokens.weight.T if self.tie_word_embeddings else self.lm_head(x))
+        if cache is not None:
+            return logits, new_cache
+        return logits

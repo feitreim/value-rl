@@ -30,16 +30,14 @@ def grpo_step(policy, tokenizer, prompts: list[str], rubric: Rubric, optimizer, 
     assert tome_client is not None, "Tome client is required for rollouts and judging"
     B, times = len(prompts), {"tome_weight_update": 0.0}
     
-    t_start = time.perf_counter()
-    _l_saved = merge_lora(policy)
-    times["merge_lora"] = time.perf_counter() - t_start
-    
-    t0 = time.perf_counter()
+    t_start = t0 = time.perf_counter()
     prompt_texts = []
+    prompt_ids_cache = []
     for p in prompts:
         txt = p["prompt"] if isinstance(p, dict) else p
         templated = tokenizer.apply_chat_template([{"role": "user", "content": txt}], add_generation_prompt=True, tokenize=False)
         prompt_texts.append(templated)
+        prompt_ids_cache.append(mx.array([tokenizer.encode(templated)]))
             
     results = tome_client.rollout(prompt_texts, group_size=G, temperature=temperature, max_tokens=max_tokens)
     times["rollout"] = time.perf_counter() - t0
@@ -78,9 +76,6 @@ def grpo_step(policy, tokenizer, prompts: list[str], rubric: Rubric, optimizer, 
     adv_mx = mx.clip(adv_mx, -_ADV_CLAMP, _ADV_CLAMP); mx.eval(adv_mx)
     times["advantage"] = time.perf_counter() - t0
     
-    restore_lora(_l_saved)
-    times["restore_lora"] = time.perf_counter() - t0
-    
     t_grad = time.perf_counter()
     total_loss = 0.0
     total_kl = 0.0
@@ -90,8 +85,7 @@ def grpo_step(policy, tokenizer, prompts: list[str], rubric: Rubric, optimizer, 
     groups_data = []
     for i in range(B):
         start, end = i * G, (i + 1) * G
-        p_text = prompt_texts[i]
-        p_ids_arr = mx.array([tokenizer.encode(p_text)])
+        p_ids_arr = prompt_ids_cache[i]
         
         r_ids_list = [all_t[j] for j in range(start, end)]
         max_r = max(len(toks) for toks in r_ids_list)
@@ -111,15 +105,10 @@ def grpo_step(policy, tokenizer, prompts: list[str], rubric: Rubric, optimizer, 
     for i, (p_ids_arr, r_ids, actual_lens, g_old_lps, g_ref_lps, g_adv, g_offsets) in enumerate(groups_data):
         def group_loss_fn(model):
             lps = group_logprobs(model, p_ids_arr, r_ids, temperature=temperature, actual_lengths=actual_lens)
-            return compute_grpo_loss(lps, g_old_lps, g_adv, g_offsets, beta=beta, ref_lps=g_ref_lps, eps=eps)
+            loss, kl = compute_grpo_loss(lps, g_old_lps, g_adv, g_offsets, beta=beta, ref_lps=g_ref_lps, eps=eps)
+            return loss, kl
         
-        # We also want to track KL for reporting
-        lps_no_grad = mx.stop_gradient(group_logprobs(policy, p_ids_arr, r_ids, temperature=temperature, actual_lengths=actual_lens))
-        delta = lps_no_grad - g_ref_lps
-        kl_tokens = mx.exp(-delta) + delta - 1
-        kl = mx.mean(mx.stack([mx.sum(kl_tokens[int(g_offsets[j]):int(g_offsets[j+1])]) for j in range(len(g_offsets)-1)]))
-        
-        loss, grads = nn.value_and_grad(policy, group_loss_fn)(policy)
+        (loss, kl), grads = nn.value_and_grad(policy, group_loss_fn)(policy)
         
         loss = loss / B
         kl = kl / B
@@ -134,7 +123,6 @@ def grpo_step(policy, tokenizer, prompts: list[str], rubric: Rubric, optimizer, 
         total_kl += kl.item()
         
         mx.eval(total_loss, total_kl, accum_grads)
-        mx.clear_cache()
 
     accum_grads, grad_norm = _clip_grad_norm(accum_grads, _GRAD_CLIP_NORM)
     mx.eval(accum_grads, grad_norm)
@@ -163,7 +151,7 @@ def grpo_step(policy, tokenizer, prompts: list[str], rubric: Rubric, optimizer, 
             })
         groups_out.append({"prompt": prompt, "completions": completions_data})
 
-    n_rollout_toks = sum(len(tokenizer.encode(c)) for c in all_c)
+    n_rollout_toks = sum(lengths)
     rollout_data = {
         "loss": total_loss, "mean_reward": rewards.mean().item(), "mean_kl": total_kl, "times": times, "groups": groups_out,
         "metrics": {"rollout_tps": n_rollout_toks / times["rollout"] if times["rollout"] > 0 else 0, "grad_norm": grad_norm_val}

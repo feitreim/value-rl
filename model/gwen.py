@@ -65,20 +65,29 @@ def _compute_token_logprobs(logits: mx.array, ids: mx.array, temperature: float)
 def group_logprobs(model, p_ids_arr: mx.array, r_ids: mx.array, temperature: float = 1.0, actual_lengths: list[int] | None = None) -> mx.array:
     """Differentiable forward pass for a single prompt group."""
     G_p = r_ids.shape[0]
-    max_r_len = r_ids.shape[1]
-    p_len = p_ids_arr.shape[1]
     
-    full_ids = mx.concatenate([mx.repeat(p_ids_arr, G_p, axis=0), r_ids], axis=1)
-    logits = model(full_ids)
-    resp_logits = logits[:, p_len - 1 : p_len - 1 + max_r_len, :]
+    # 1. Forward prompt once
+    p_logits, p_cache = model(p_ids_arr, cache=[])
+    
+    # Repeat cache for the responses
+    repeated_cache = []
+    for k, v in p_cache:
+        repeated_cache.append((mx.repeat(k, G_p, axis=0), mx.repeat(v, G_p, axis=0)))
+    
+    # 2. Forward responses
+    last_p_logits = mx.repeat(p_logits[:, -1:, :], G_p, axis=0)
+    r_logits, _ = model(r_ids, cache=repeated_cache)
+    
+    # Concatenate last prompt logits with response logits
+    resp_logits = mx.concatenate([last_p_logits, r_logits[:, :-1, :]], axis=1)
+    
     lps = _compute_token_logprobs(resp_logits, r_ids, temperature)
     
     if actual_lengths is not None:
         return mx.concatenate([lps[i, :actual_lengths[i]] for i in range(G_p)])
     return lps
 
-@mx.compile
-def compute_grpo_loss(policy_lps: mx.array, old_lps: mx.array, advantages: mx.array, offsets: mx.array, beta: float = 0.01, ref_lps: mx.array | None = None, eps: float = 0.2) -> mx.array:
+def compute_grpo_loss(policy_lps: mx.array, old_lps: mx.array, advantages: mx.array, offsets: mx.array, beta: float = 0.01, ref_lps: mx.array | None = None, eps: float = 0.2) -> tuple[mx.array, mx.array]:
     offsets_l = offsets.tolist()
     resp_idx = mx.array([i for i in range(len(offsets_l)-1) for _ in range(offsets_l[i+1]-offsets_l[i])], dtype=mx.int32)
     
@@ -88,13 +97,14 @@ def compute_grpo_loss(policy_lps: mx.array, old_lps: mx.array, advantages: mx.ar
     token_loss = -mx.minimum(ratio * adv, mx.clip(ratio, 1.0 - eps, 1.0 + eps) * adv)
     loss = mx.mean(mx.clip(token_loss, -100.0, 100.0))
     
-    if ref_lps is not None and beta > 0.0:
-        # k3 estimator: exp(ref-policy) - 1 - (ref-policy) = exp(-δ) + δ - 1 (always ≥ 0)
-        # Gradient is (1 - exp(-δ)): pulls policy toward ref from both directions.
+    kl_mean = mx.array(0.0)
+    if ref_lps is not None:
         delta = policy_lps - ref_lps
         kl_tokens = mx.exp(-delta) + delta - 1
         kl_per_resp = []
         for i in range(len(offsets_l)-1):
             kl_per_resp.append(mx.sum(kl_tokens[offsets_l[i]:offsets_l[i+1]]))
-        loss = loss + beta * mx.mean(mx.stack(kl_per_resp))
-    return loss
+        kl_mean = mx.mean(mx.stack(kl_per_resp))
+        if beta > 0.0:
+            loss = loss + beta * kl_mean
+    return loss, kl_mean
