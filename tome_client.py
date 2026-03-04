@@ -52,27 +52,26 @@ class TomeClient:
         """
         from lora import LoRALinear
         updates = []
-        
+
         def _collect_updates(k, m):
             if isinstance(m, LoRALinear):
-                # k is like "layers.0.self_attn.q_proj"
+                # k is like "layers.0.self_attn.qkv_proj"
                 parts = k.split(".")
                 layer_idx = int(parts[1])
                 param_name = ".".join(parts[2:])
-                
-                # Convert MLX to bfloat16 bytes
-                # MLX bfloat16 doesn't directly map to a standard numpy dtype in some versions,
-                # so we use uint16 to preserve the bit patterns.
-                a_np = np.array(m.lora_a.astype(mx.uint16))
-                b_np = np.array(m.lora_b.astype(mx.uint16))
-                
+
+                # Reinterpret bfloat16 bits as uint16 for serialization (view, not cast)
+                a_np = np.array(m.lora_a.view(mx.uint16))
+                b_np = np.array(m.lora_b.view(mx.uint16))
+
                 updates.append({
                     "layer_idx": layer_idx,
                     "param_name": param_name,
                     "lora_a": base64.b64encode(a_np.tobytes()).decode("utf-8"),
                     "lora_b": base64.b64encode(b_np.tobytes()).decode("utf-8"),
                     "shape_a": [int(s) for s in m.lora_a.shape],
-                    "shape_b": [int(s) for s in m.lora_b.shape]
+                    "shape_b": [int(s) for s in m.lora_b.shape],
+                    "lora_scale": m._lora_scale,
                 })
         
         model.apply_to_modules(_collect_updates)
@@ -82,4 +81,12 @@ class TomeClient:
             
         resp = self.client.post(f"{self.base_url}/v1/weights", json={"updates": updates})
         resp.raise_for_status()
-        return resp.json()
+        results = resp.json()
+        
+        for node_id, status in results.items():
+            if "error" in status:
+                raise RuntimeError(f"Weight update failed on node {node_id}: {status['error']}")
+            if not status.get("success", False):
+                raise RuntimeError(f"Weight update reported failure on node {node_id}: {status}")
+                
+        return results

@@ -1,4 +1,34 @@
-# Next Steps
+## Status (2026-03-03, Tome Integration)
+
+- **Prefix Cache Fixed (Option A)**:
+  - Rewrote `update_paged_kv` to be functional (returns new pools) and optimized it using one-shot block-wise `__setitem__` indexing.
+  - Accelerated `gather_kv` using the existing Metal kernel, replacing slow Python-based concatenation.
+  - Added `mx.eval` to `flush_to_pool` to ensure KV pools are materialized, preventing graph complexity issues.
+  - Verified **3.5x speedup** on full cache hits and **7.2x speedup** on partial (50%) hits for 1024-token prompts.
+- **Sampling Parity**:
+  - Implemented `top_k=20` sampling in `grpo.py` to match Tome's implementation.
+  - Ensures both local rollouts and Tome-based rollouts follow the same distribution.
+- **Weight Update Error Propagation**:
+  - Updated `tome_client.py` to check the status of every node after a weight update.
+  - Now raises `RuntimeError` if any node fails to sync, preventing policy divergence.
+- **Verified Benchmark**:
+  - Tome now scales much better than `vllm-mlx` at high batch sizes:
+    - B=64: Tome **662.7 tok/s** vs vllm-mlx 412.4 tok/s.
+    - B=128: Tome **655.4 tok/s** vs vllm-mlx 410.4 tok/s.
+
+## Status (2026-03-01, quality fix)
+
+- **Rubric judge switched from `policy` to `ref_model`** (`train.py:62`).
+  - Root cause of quality degradation: self-judging creates a feedback loop where the model
+    learns to score well under itself, not actually improve. Reward signal was drifting with LoRA.
+  - Fix: `Rubric(DEFAULT_CRITERIA, ref_model, tokenizer)` — frozen judge, stable reward signal.
+- **KL coefficient `β` raised from 0.01 → 0.04** (default in `train.py`).
+  - Old value allowed the policy to drift far from the reference before KL pushed back.
+  - 0.04 gives a tighter anchor without suppressing learning.
+- **Reward hacking monitoring added to step printout**:
+  - Mean response length (chars) — watch for sudden drop (evasive short responses)
+  - Reward std across the group — watch for collapse toward 0 (all responses identical)
+  - Per-criterion mean scores — watch for all converging to +0.5 (judge inflation)
 
 ## Status (2026-03-01, latest)
 

@@ -51,7 +51,23 @@ def sample_group(model, tokenizer, prompts: list[str], G: int = 8, temperature: 
             if temperature < 1e-6:
                 next_toks = mx.argmax(l_logits[:, 0, :], axis=-1).astype(mx.int32)
             else:
-                next_toks = mx.random.categorical(fused_log_softmax(l_logits[:, 0, :], temperature)).astype(mx.int32)
+                # Top-k sampling (matching Tome's top_k=20)
+                top_k = 20
+                scaled_logits = l_logits[:, 0, :] / temperature
+                
+                # We need to do top-k per row in the batch
+                # argsort is a bit slow but correct for small k
+                indices = mx.argsort(scaled_logits, axis=-1)[:, -top_k:]
+                
+                # Gather the top logits
+                top_logits = mx.take_along_axis(scaled_logits, indices, axis=-1)
+                
+                # Sample from the top-k
+                sampled_indices = mx.random.categorical(top_logits).reshape(-1, 1)
+                
+                # Map back to original vocab indices
+                next_toks = mx.take_along_axis(indices, sampled_indices, axis=-1).reshape(-1).astype(mx.int32)
+                
             sampled_steps.append(next_toks)
             l_logits, ex_cache = model(next_toks.reshape(-1, 1), cache=ex_cache)
             ex_cache.advance(1)
@@ -86,6 +102,9 @@ def grpo_step(policy, ref_model, tokenizer, prompts: list[str], rubric: Rubric, 
                 
         results = tome_client.rollout(prompt_texts, group_size=G, temperature=temperature, max_tokens=max_tokens)
         times["rollout"] = time.perf_counter() - t0
+        
+        # Sort results by prompt_id ("p0", "p1", ...) to ensure they match prompts order
+        results = sorted(results, key=lambda x: int(x["prompt_id"][1:]))
         
         all_p = []
         all_c = []
